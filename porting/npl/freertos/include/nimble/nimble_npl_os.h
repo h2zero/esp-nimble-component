@@ -23,11 +23,11 @@
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
-#include "FreeRTOS.h"
-#include "queue.h"
-#include "semphr.h"
-#include "task.h"
-#include "timers.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "freertos/timers.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -272,23 +272,25 @@ ble_npl_time_delay(ble_npl_time_t ticks)
 
 #if NIMBLE_CFG_CONTROLLER
 static inline void
-ble_npl_hw_set_isr(int irqn, void (*addr)(void))
+ble_npl_hw_set_isr(int irqn, uint32_t addr)
 {
     npl_freertos_hw_set_isr(irqn, addr);
 }
 #endif
 
+extern portMUX_TYPE ble_port_mutex; 
+//critical section
 static inline uint32_t
 ble_npl_hw_enter_critical(void)
 {
-    vPortEnterCritical();
+    portENTER_CRITICAL(&ble_port_mutex);
     return 0;
 }
 
 static inline void
 ble_npl_hw_exit_critical(uint32_t ctx)
 {
-    vPortExitCritical();
+    portEXIT_CRITICAL(&ble_port_mutex);
 
 }
 

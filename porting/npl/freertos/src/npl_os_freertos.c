@@ -21,12 +21,15 @@
 #include <stddef.h>
 #include <string.h>
 #include "nimble/nimble_npl.h"
+#include "freertos/portable.h"
+
+portMUX_TYPE ble_port_mutex = portMUX_INITIALIZER_UNLOCKED;
 
 static inline bool
 in_isr(void)
 {
     /* XXX hw specific! */
-    return (SCB->ICSR & SCB_ICSR_VECTACTIVE_Msk) != 0;
+    return xPortInIsrContext() != 0;
 }
 
 struct ble_npl_event *
@@ -39,7 +42,9 @@ npl_freertos_eventq_get(struct ble_npl_eventq *evq, ble_npl_time_t tmo)
     if (in_isr()) {
         assert(tmo == 0);
         ret = xQueueReceiveFromISR(evq->q, &ev, &woken);
-        portYIELD_FROM_ISR(woken);
+        if( woken == pdTRUE ) {
+            portYIELD_FROM_ISR();
+        }
     } else {
         ret = xQueueReceive(evq->q, &ev, tmo);
     }
@@ -66,7 +71,9 @@ npl_freertos_eventq_put(struct ble_npl_eventq *evq, struct ble_npl_event *ev)
 
     if (in_isr()) {
         ret = xQueueSendToBackFromISR(evq->q, &ev, &woken);
-        portYIELD_FROM_ISR(woken);
+        if( woken == pdTRUE ) {
+            portYIELD_FROM_ISR();
+        }
     } else {
         ret = xQueueSendToBack(evq->q, &ev, portMAX_DELAY);
     }
@@ -113,9 +120,12 @@ npl_freertos_eventq_remove(struct ble_npl_eventq *evq,
             woken |= woken2;
         }
 
-        portYIELD_FROM_ISR(woken);
+        if( woken == pdTRUE ) {
+            portYIELD_FROM_ISR();
+        }
     } else {
-        vPortEnterCritical();
+        portMUX_TYPE ble_npl_mut = portMUX_INITIALIZER_UNLOCKED;
+        portENTER_CRITICAL(&ble_npl_mut);
 
         count = uxQueueMessagesWaiting(evq->q);
         for (i = 0; i < count; i++) {
@@ -130,7 +140,7 @@ npl_freertos_eventq_remove(struct ble_npl_eventq *evq,
             assert(ret == pdPASS);
         }
 
-        vPortExitCritical();
+        portEXIT_CRITICAL(&ble_npl_mut);
     }
 
     ev->queued = 0;
@@ -218,7 +228,9 @@ npl_freertos_sem_pend(struct ble_npl_sem *sem, ble_npl_time_t timeout)
     if (in_isr()) {
         assert(timeout == 0);
         ret = xSemaphoreTakeFromISR(sem->handle, &woken);
-        portYIELD_FROM_ISR(woken);
+        if( woken == pdTRUE ) {
+            portYIELD_FROM_ISR();
+        }
     } else {
         ret = xSemaphoreTake(sem->handle, timeout);
     }
@@ -240,7 +252,10 @@ npl_freertos_sem_release(struct ble_npl_sem *sem)
 
     if (in_isr()) {
         ret = xSemaphoreGiveFromISR(sem->handle, &woken);
-        portYIELD_FROM_ISR(woken);
+        
+        if( woken == pdTRUE ) {
+            portYIELD_FROM_ISR();
+        }
     } else {
         ret = xSemaphoreGive(sem->handle);
     }
@@ -288,7 +303,9 @@ npl_freertos_callout_reset(struct ble_npl_callout *co, ble_npl_time_t ticks)
         xTimerChangePeriodFromISR(co->handle, ticks, &woken2);
         xTimerResetFromISR(co->handle, &woken3);
 
-        portYIELD_FROM_ISR(woken1 || woken2 || woken3);
+        if( woken1 == pdTRUE || woken2 == pdTRUE || woken3 == pdTRUE) {
+            portYIELD_FROM_ISR();
+        }
     } else {
         xTimerStop(co->handle, portMAX_DELAY);
         xTimerChangePeriod(co->handle, ticks, portMAX_DELAY);
