@@ -14,6 +14,7 @@
 #include "host/ble_hs_adv.h"
 #include "host/ble_gap.h"
 #include "mesh/porting.h"
+#include "nimble/nimble_port.h"
 
 #include "adv.h"
 #include "net.h"
