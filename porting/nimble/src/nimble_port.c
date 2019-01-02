@@ -26,6 +26,9 @@
 #include "controller/ble_ll.h"
 #include "transport/ram/ble_hci_ram.h"
 #endif
+#ifdef ESP_PLATFORM
+#include "esp_log.h"
+#endif
 
 static struct ble_npl_eventq g_eventq_dflt;
 
@@ -53,6 +56,11 @@ nimble_port_init(void)
 #endif
     ble_transport_ll_init();
 #endif
+
+#ifdef ESP_PLATFORM
+    esp_log_level_set("NimBLE", LOG_LOCAL_LEVEL);
+#endif
+
 }
 
 void
