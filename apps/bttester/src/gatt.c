@@ -654,7 +654,7 @@ static void discover_destroy(void)
 	gatt_buf_clear();
 }
 
-static void read_destroy()
+static void read_destroy(void)
 {
 	gatt_buf_clear();
 }
