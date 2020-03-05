@@ -24,6 +24,7 @@
 #include "nimble/hci_common.h"
 #include "host/ble_gap.h"
 #include "ble_hs_priv.h"
+#include "ble_hs_resolv_priv.h"
 
 _Static_assert(sizeof (struct hci_data_hdr) == BLE_HCI_DATA_HDR_SZ,
                "struct hci_data_hdr must be 4 bytes");
@@ -314,6 +315,19 @@ ble_hs_hci_evt_le_enh_conn_complete(uint8_t subevent, const void *data,
         memcpy(evt.peer_addr, ev->peer_addr, BLE_DEV_ADDR_LEN);
         memcpy(evt.local_rpa, ev->local_rpa, BLE_DEV_ADDR_LEN);
         memcpy(evt.peer_rpa,ev->peer_rpa, BLE_DEV_ADDR_LEN);
+
+#if MYNEWT_VAL(BLE_HOST_BASED_PRIVACY)
+        /* RPA needs to be resolved here, as controller is not aware of the
+         * address is RPA in Host based RPA  */
+        if (ble_host_rpa_enabled()) {
+            uint8_t *local_id_rpa = ble_hs_get_rpa_local();
+            memcpy(evt.local_rpa, local_id_rpa, BLE_DEV_ADDR_LEN);
+        }
+
+        struct ble_hs_resolv_entry *rl = NULL;
+        ble_rpa_replace_peer_params_with_rl(evt.peer_addr,
+                                            &evt.peer_addr_type, &rl);
+#endif
         evt.conn_itvl = le16toh(ev->conn_itvl);
         evt.conn_latency = le16toh(ev->conn_latency);
         evt.supervision_timeout = le16toh(ev->supervision_timeout);
@@ -356,6 +370,23 @@ ble_hs_hci_evt_le_conn_complete(uint8_t subevent, const void *data,
         evt.peer_addr_type = ev->peer_addr_type;
         memcpy(evt.peer_addr, ev->peer_addr, BLE_DEV_ADDR_LEN);
 
+#if MYNEWT_VAL(BLE_HOST_BASED_PRIVACY)
+        /* RPA needs to be resolved here, as controller is not aware of the
+         * address is RPA in Host based RPA  */
+        if (ble_host_rpa_enabled()) {
+            uint8_t *local_id_rpa = ble_hs_get_rpa_local();
+            memcpy(evt.local_rpa, local_id_rpa, BLE_DEV_ADDR_LEN);
+
+            struct ble_hs_resolv_entry *rl = NULL;
+            ble_rpa_replace_peer_params_with_rl(evt.peer_addr,
+                                                &evt.peer_addr_type, &rl);
+            if (rl == NULL) {
+                if (ble_rpa_resolv_add_peer_rec(evt.peer_addr) != 0) {
+                    BLE_HS_LOG(DEBUG, "Memory unavailable for new peer record\n");
+                }
+            }
+        }
+#endif
         evt.conn_itvl = le16toh(ev->conn_itvl);
         evt.conn_latency = le16toh(ev->conn_latency);
         evt.supervision_timeout = le16toh(ev->supervision_timeout);
@@ -445,6 +476,14 @@ ble_hs_hci_evt_le_adv_rpt(uint8_t subevent, const void *data, unsigned int len)
 
     for (i = 0; i < ev->num_reports; i++) {
         rpt = data;
+#if MYNEWT_VAL(BLE_HOST_BASED_PRIVACY)
+        if (ble_host_rpa_enabled()) {
+            /* Now RPA to be resolved here, since controller is unaware of the
+             * address is RPA  */
+            ble_rpa_replace_peer_params_with_rl(desc.addr.val,
+                                                &desc.addr.type, NULL);
+        }
+#endif
 
         data += sizeof(rpt) + rpt->data_len + 1;
 
