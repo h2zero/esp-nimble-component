@@ -333,7 +333,7 @@ ble_hs_hci_evt_le_conn_complete(uint8_t subevent, uint8_t *data, int len)
                 uint8_t *local_id_rpa = ble_hs_get_rpa_local();
                 memcpy(evt.local_rpa, local_id_rpa, 6);
             }
-            
+
             struct ble_hs_resolv_entry *rl = NULL;
             ble_rpa_replace_peer_params_with_rl(evt.peer_addr,
                                                 &evt.peer_addr_type, &rl);
@@ -433,14 +433,6 @@ ble_hs_hci_evt_le_adv_rpt(uint8_t subevent, uint8_t *data, int len)
         memcpy(desc.addr.val, data + off, 6);
         off += 6;
 
-#if MYNEWT_VAL(BLE_HOST_BASED_PRIVACY)
-        if (ble_host_rpa_enabled()) {
-            /* Now RPA to be resolved here, since controller is unaware of the
-             * address is RPA  */
-            ble_rpa_replace_peer_params_with_rl(desc.addr.val,
-                                                &desc.addr.type, NULL);
-        }
-#endif
         desc.length_data = data[off];
         ++off;
 
