@@ -19,4 +19,6 @@ Configure settings in `main menu -> NimBLE Options`.
 A C++ library is [available here](https://github.com/h2zero/esp-nimble-cpp) for use with NimBLE that is (mostly) compatible  
 with the original cpp_utils and esp32-Arduino BLE library.  
    
-   
+# Current tracking
+
+This repo is currently using espressif/esp-nimble @46c1d9f and espressif/esp-idf @2ef4890  
