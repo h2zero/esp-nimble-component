@@ -10,6 +10,7 @@ if(CONFIG_NIMBLE_ENABLED)
             nimble/nimble/host/services/gap/include
             nimble/nimble/host/services/gatt/include
             nimble/nimble/host/services/ias/include
+            nimble/nimble/host/services/ipss/include
             nimble/nimble/host/services/lls/include
             nimble/nimble/host/services/tps/include
             nimble/nimble/host/util/include
@@ -23,6 +24,7 @@ if(CONFIG_NIMBLE_ENABLED)
             "./nimble/nimble/host/services/gatt/src/ble_svc_gatt.c"
             "./nimble/nimble/host/services/tps/src/ble_svc_tps.c"
             "./nimble/nimble/host/services/ias/src/ble_svc_ias.c"
+            "./nimble/nimble/host/services/ipss/src/ble_svc_ipss.c"
             "./nimble/nimble/host/services/ans/src/ble_svc_ans.c"
             "./nimble/nimble/host/services/gap/src/ble_svc_gap.c"
             "./nimble/nimble/host/services/bas/src/ble_svc_bas.c"
@@ -44,6 +46,7 @@ if(CONFIG_NIMBLE_ENABLED)
             "./nimble/nimble/host/src/ble_hs_hci_evt.c"
             "./nimble/nimble/host/src/ble_hs_dbg.c"
             "./nimble/nimble/host/src/ble_hs_mqueue.c"
+            "./nimble/nimble/host/src/ble_hs_periodic_sync.c"
             "./nimble/nimble/host/src/ble_att.c"
             "./nimble/nimble/host/src/ble_gattc.c"
             "./nimble/nimble/host/src/ble_store.c"
