@@ -7,7 +7,7 @@ This repo is provided to allow ESP-IDF v3.2 & v3.3 users to use NimBLE for their
 ## Arduino as a component Note:
 If you are using IDF 3.3, which already includes NimBLE, and also using Arduino as a component you will need this to use NimBLE as well.  
 This is because enabling NimBLE in menuconfig will disable bluedroid and will result in compilation  
-errors that require disabling many Arduino librarys.  
+errors that require disabling many Arduino libraries.  
 This repo solves that by using NimBLE as a component in the project folder.  
 
 # Using:
@@ -21,4 +21,4 @@ with the original cpp_utils and esp32-Arduino BLE library.
    
 # Current tracking
 
-This repo is currently using espressif/esp-nimble @46c1d9f and espressif/esp-idf @2ef4890  
+This repo is currently using espressif/esp-nimble @95bd864
