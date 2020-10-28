@@ -14,7 +14,8 @@ This repo solves that by using NimBLE as a component in the project folder.
 Download or clone this repo into your `project/components` folder and run `menuconfig`.  
 Configure settings in `main menu -> NimBLE Options`.  
    
-**DO NOT** enable NimBLE in `Component config -> Bluetooth` if using v3.3.2 and Arduino (see note above).  
+**DO NOT** enable NimBLE in `Component config -> Bluetooth` if using v3.3.2 and Arduino (see note above).
+Bluetooth and Bluedroid both have to be enabled though.
    
 A C++ library is [available here](https://github.com/h2zero/esp-nimble-cpp) for use with NimBLE that is (mostly) compatible  
 with the original cpp_utils and esp32-Arduino BLE library.  
