@@ -22,4 +22,4 @@ with the original cpp_utils and esp32-Arduino BLE library.
    
 # Current tracking
 
-This repo is currently using espressif/esp-nimble @95bd864
+This repo is currently using espressif/esp-nimble @f4ae049
