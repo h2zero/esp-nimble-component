@@ -17,6 +17,9 @@
  * under the License.
  */
 
+#include "syscfg/syscfg.h"
+#define MESH_LOG_MODULE BLE_MESH_LOG
+
 #include "mesh/glue.h"
 #include "adv.h"
 #ifndef MYNEWT
@@ -26,22 +29,6 @@
 #if MYNEWT_VAL(BLE_MESH_SETTINGS)
 #include "base64/base64.h"
 #endif
-
-#define BT_DBG_ENABLED (MYNEWT_VAL(BLE_MESH_DEBUG))
-
-#if MYNEWT_VAL(BLE_EXT_ADV)
-#define BT_MESH_ADV_INST     (MYNEWT_VAL(BLE_MULTI_ADV_INSTANCES))
-
-#if MYNEWT_VAL(BLE_MESH_PROXY)
-/* Note that BLE_MULTI_ADV_INSTANCES contains number of additional instances.
- * Instance 0 is always there
- */
-#if MYNEWT_VAL(BLE_MULTI_ADV_INSTANCES) < 1
-#error "Mesh needs at least BLE_MULTI_ADV_INSTANCES set to 1"
-#endif
-#define BT_MESH_ADV_GATT_INST     (MYNEWT_VAL(BLE_MULTI_ADV_INSTANCES) - 1)
-#endif /* BLE_MESH_PROXY */
-#endif /* BLE_EXT_ADV */
 
 extern u8_t g_mesh_addr_type;
 
@@ -872,13 +859,11 @@ void net_buf_slist_remove(struct net_buf_slist_t *list, struct os_mbuf *prev,
 void net_buf_slist_merge_slist(struct net_buf_slist_t *list,
 			       struct net_buf_slist_t *list_to_append)
 {
-	struct os_mbuf_pkthdr *pkthdr;
-
-	STAILQ_FOREACH(pkthdr, list_to_append, omp_next) {
-		STAILQ_INSERT_TAIL(list, pkthdr, omp_next);
+	if (!STAILQ_EMPTY(list_to_append)) {
+		*(list)->stqh_last = list_to_append->stqh_first;
+		(list)->stqh_last = list_to_append->stqh_last;
+		STAILQ_INIT(list_to_append);
 	}
-
-	STAILQ_INIT(list);
 }
 
 #if MYNEWT_VAL(BLE_MESH_SETTINGS)
@@ -889,7 +874,8 @@ int settings_bytes_from_str(char *val_str, void *vp, int *len)
     return 0;
 }
 
-char *settings_str_from_bytes(void *vp, int vp_len, char *buf, int buf_len)
+char *settings_str_from_bytes(const void *vp, int vp_len,
+			      char *buf, int buf_len)
 {
     if (BASE64_ENCODE_SIZE(vp_len) > buf_len) {
         return NULL;

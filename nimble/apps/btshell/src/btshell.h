@@ -64,6 +64,7 @@ struct btshell_svc {
     SLIST_ENTRY(btshell_svc) next;
     struct ble_gatt_svc svc;
     struct btshell_chr_list chrs;
+    bool discovered;
 };
 
 SLIST_HEAD(btshell_svc_list, btshell_svc);
@@ -71,6 +72,7 @@ SLIST_HEAD(btshell_svc_list, btshell_svc);
 struct btshell_l2cap_coc {
     SLIST_ENTRY(btshell_l2cap_coc) next;
     struct ble_l2cap_chan *chan;
+    bool stalled;
 };
 
 SLIST_HEAD(btshell_l2cap_coc_list, btshell_l2cap_coc);
@@ -95,6 +97,7 @@ int btshell_disc_svcs(uint16_t conn_handle);
 int btshell_disc_svc_by_uuid(uint16_t conn_handle, const ble_uuid_t *uuid);
 int btshell_disc_all_chrs(uint16_t conn_handle, uint16_t start_handle,
                            uint16_t end_handle);
+int btshell_disc_all_chrs_in_svc(uint16_t conn_handle, struct btshell_svc *svc);
 int btshell_disc_chrs_by_uuid(uint16_t conn_handle, uint16_t start_handle,
                                uint16_t end_handle, const ble_uuid_t *uuid);
 int btshell_disc_all_dscs(uint16_t conn_handle, uint16_t start_handle,
@@ -168,10 +171,12 @@ int btshell_tx_start(uint16_t conn_handle, uint16_t len, uint16_t rate,
                      uint16_t num);
 void btshell_tx_stop(void);
 int btshell_rssi(uint16_t conn_handle, int8_t *out_rssi);
-int btshell_l2cap_create_srv(uint16_t psm, int accept_response);
-int btshell_l2cap_connect(uint16_t conn, uint16_t psm);
+int btshell_l2cap_create_srv(uint16_t psm, uint16_t mtu, int accept_response);
+int btshell_l2cap_connect(uint16_t conn, uint16_t psm, uint16_t mtu, uint8_t num);
 int btshell_l2cap_disconnect(uint16_t conn, uint16_t idx);
 int btshell_l2cap_send(uint16_t conn, uint16_t idx, uint16_t bytes);
+int btshell_l2cap_reconfig(uint16_t conn_handle, uint16_t mtu,
+                           uint8_t num, uint8_t idxs[]);
 
 int btshell_gap_event(struct ble_gap_event *event, void *arg);
 void btshell_sync_stats(uint16_t handle);

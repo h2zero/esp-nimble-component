@@ -29,6 +29,13 @@
 #include "ble_hs_test_util.h"
 #include "ble_sm_test_util.h"
 
+#define BLE_HCI_LT_KEY_REQ_REPLY_LEN        (18)
+#define BLE_HCI_LT_KEY_REQ_NEG_REPLY_LEN    (2)
+#define BLE_HCI_LT_KEY_REQ_REPLY_ACK_PARAM_LEN (2) /* No status byte. */
+#define BLE_HCI_LT_KEY_REQ_NEG_REPLY_ACK_PARAM_LEN (2)
+#define BLE_HCI_LE_START_ENCRYPT_LEN        (28)
+#define BLE_HCI_ADD_TO_RESOLV_LIST_LEN      (39)
+
 int ble_sm_test_gap_event_type;
 int ble_sm_test_gap_status;
 struct ble_gap_sec_state ble_sm_test_sec_state;
@@ -476,7 +483,7 @@ ble_sm_test_util_params_to_entity(struct ble_sm_test_params *params,
     }
 
     out_entity->id_addr_type =
-        ble_hs_misc_addr_type_to_id(out_entity->addr_type);
+        ble_hs_misc_own_addr_type_to_id(out_entity->addr_type);
 }
 
 static void
@@ -1239,13 +1246,13 @@ ble_sm_test_util_verify_tx_pair_fail(
 static void
 ble_sm_test_util_rx_lt_key_req(uint16_t conn_handle, uint64_t r, uint16_t ediv)
 {
-    struct hci_le_lt_key_req evt;
+    struct ble_hci_ev_le_subev_lt_key_req evt;
     int rc;
 
-    evt.subevent_code = BLE_HCI_LE_SUBEV_LT_KEY_REQ;
-    evt.connection_handle = conn_handle;
-    evt.random_number = r;
-    evt.encrypted_diversifier = ediv;
+    evt.subev_code = BLE_HCI_LE_SUBEV_LT_KEY_REQ;
+    evt.conn_handle = htole16(conn_handle);
+    evt.rand = htole64(r);
+    evt.div = htole16(ediv);
 
     rc = ble_sm_ltk_req_rx(&evt);
     TEST_ASSERT_FATAL(rc == 0);
@@ -1307,11 +1314,11 @@ static void
 ble_sm_test_util_rx_enc_change(uint16_t conn_handle, uint8_t status,
                                      uint8_t encryption_enabled)
 {
-    struct hci_encrypt_change evt;
+    struct ble_hci_ev_enrypt_chg evt;
 
     evt.status = status;
-    evt.encryption_enabled = encryption_enabled;
-    evt.connection_handle = conn_handle;
+    evt.enabled = encryption_enabled;
+    evt.connection_handle = htole16(conn_handle);
 
     ble_sm_enc_change_rx(&evt);
 }
@@ -1634,7 +1641,7 @@ ble_sm_test_util_peer_bonding_good(int send_enc_req,
     /* Ensure the LTK request event got sent to the application. */
     TEST_ASSERT(ble_sm_test_store_obj_type == BLE_STORE_OBJ_TYPE_OUR_SEC);
     TEST_ASSERT(ble_sm_test_store_key.sec.peer_addr.type ==
-                ble_hs_misc_addr_type_to_id(peer_addr_type));
+                ble_hs_misc_peer_addr_type_to_id(peer_addr_type));
     TEST_ASSERT(ble_sm_test_store_key.sec.ediv_rand_present);
     TEST_ASSERT(ble_sm_test_store_key.sec.ediv == ediv);
     TEST_ASSERT(ble_sm_test_store_key.sec.rand_num == rand_num);
@@ -2237,7 +2244,7 @@ ble_sm_test_util_us_lgcy_good(struct ble_sm_test_params *params)
     ble_sm_test_util_bonding_all(params, 1);
 
     /* Verify programmatic unbonding. */
-    peer_addr.type = ble_hs_misc_addr_type_to_id(params->resp_addr_type);
+    peer_addr.type = ble_hs_misc_peer_addr_type_to_id(params->resp_addr_type);
     memcpy(peer_addr.val, params->resp_id_addr, sizeof peer_addr.val);
     rc = ble_store_util_delete_peer(&peer_addr);
     TEST_ASSERT(rc == 0);
@@ -2401,7 +2408,7 @@ ble_sm_test_util_peer_lgcy_good(struct ble_sm_test_params *params)
     ble_sm_test_util_repeat_pairing(params, 0);
 
     /* Verify programmatic unbonding. */
-    peer_addr.type = ble_hs_misc_addr_type_to_id(params->init_addr_type);
+    peer_addr.type = ble_hs_misc_peer_addr_type_to_id(params->init_addr_type);
     memcpy(peer_addr.val, params->init_id_addr, sizeof peer_addr.val);
     rc = ble_store_util_delete_peer(&peer_addr);
     TEST_ASSERT(rc == 0);
@@ -2594,7 +2601,7 @@ ble_sm_test_util_us_sc_good(struct ble_sm_test_params *params)
     ble_sm_test_util_bonding_all(params, 1);
 
     /* Verify programmatic unbonding. */
-    peer_addr.type = ble_hs_misc_addr_type_to_id(params->resp_addr_type);
+    peer_addr.type = ble_hs_misc_peer_addr_type_to_id(params->resp_addr_type);
     memcpy(peer_addr.val, params->resp_id_addr, sizeof peer_addr.val);
     rc = ble_store_util_delete_peer(&peer_addr);
     TEST_ASSERT(rc == 0);
@@ -2815,7 +2822,7 @@ ble_sm_test_util_peer_sc_good(struct ble_sm_test_params *params)
     ble_sm_test_util_repeat_pairing(params, 1);
 
     /* Verify programmatic unbonding. */
-    peer_addr.type = ble_hs_misc_addr_type_to_id(params->init_addr_type);
+    peer_addr.type = ble_hs_misc_peer_addr_type_to_id(params->init_addr_type);
     memcpy(peer_addr.val, params->init_id_addr, sizeof peer_addr.val);
     rc = ble_store_util_delete_peer(&peer_addr);
     TEST_ASSERT(rc == 0);

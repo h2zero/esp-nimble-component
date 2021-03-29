@@ -137,7 +137,7 @@
 #endif
 #define BLE_SUPP_CMD_LE_READ_SUPP_STATES    (1 << 3)
 
-#if MYNEWT_VAL(BLE_LL_DIRECT_TEST_MODE)
+#if MYNEWT_VAL(BLE_LL_DTM)
 #define BLE_SUPP_CMD_LE_RX_TEST             (1 << 4)
 #define BLE_SUPP_CMD_LE_TX_TEST             (1 << 5)
 #define BLE_SUPP_CMD_LE_TEST_END            (1 << 6)
@@ -233,7 +233,7 @@
 #define BLE_SUPP_CMD_LE_SET_PHY             (0 << 6)
 #endif
 
-#if MYNEWT_VAL(BLE_LL_DIRECT_TEST_MODE)
+#if MYNEWT_VAL(BLE_LL_DTM)
 #define BLE_SUPP_CMD_LE_ENHANCED_RX_TEST    (1 << 7)
 #else
 #define BLE_SUPP_CMD_LE_ENHANCED_RX_TEST    (0 << 7)
@@ -252,7 +252,7 @@
 )
 
 /* Octet 36 */
-#if MYNEWT_VAL(BLE_LL_DIRECT_TEST_MODE)
+#if MYNEWT_VAL(BLE_LL_DTM)
 #define BLE_SUPP_CMD_LE_ENHANCED_TX_TEST    (1 << 0)
 #else
 #define BLE_SUPP_CMD_LE_ENHANCED_TX_TEST    (0 << 0)
@@ -375,6 +375,41 @@
     BLE_SUPP_CMD_LE_SET_PRIVACY_MODE        \
 )
 
+/* Octet 40 */
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV) && MYNEWT_VAL(BLE_VERSION) >= 51
+#define BLE_SUPP_CMD_LE_PADV_RECV_ENABLE (1 << 5)
+#else
+#define BLE_SUPP_CMD_LE_PADV_RECV_ENABLE (0 << 5)
+#endif
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+#define BLE_SUPP_CMD_LE_PADV_SYNC_TRANSFER (1 << 6)
+#define BLE_SUPP_CMD_LE_PADV_SET_INFO_TRANSFER (1 << 7)
+#else
+#define BLE_SUPP_CMD_LE_PADV_SYNC_TRANSFER (0 << 6)
+#define BLE_SUPP_CMD_LE_PADV_SET_INFO_TRANSFER (0 << 7)
+#endif
+
+#define BLE_LL_SUPP_CMD_OCTET_40             \
+(                                            \
+    BLE_SUPP_CMD_LE_PADV_RECV_ENABLE       | \
+    BLE_SUPP_CMD_LE_PADV_SYNC_TRANSFER     | \
+    BLE_SUPP_CMD_LE_PADV_SET_INFO_TRANSFER   \
+)
+
+/* Octet 41 */
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+#define BLE_SUPP_CMD_LE_PADV_SYNC_TRANSFER_PARAMS (1 << 0)
+#define BLE_SUPP_CMD_LE_PADV_DEFAULT_SYNC_TRANSFER_PARAMS (1 << 1)
+#else
+#define BLE_SUPP_CMD_LE_PADV_SYNC_TRANSFER_PARAMS (0 << 0)
+#define BLE_SUPP_CMD_LE_PADV_DEFAULT_SYNC_TRANSFER_PARAMS (0 << 1)
+#endif
+#define BLE_LL_SUPP_CMD_OCTET_41                        \
+(                                                       \
+    BLE_SUPP_CMD_LE_PADV_SYNC_TRANSFER_PARAMS |         \
+    BLE_SUPP_CMD_LE_PADV_DEFAULT_SYNC_TRANSFER_PARAMS   \
+)
+
 /* Defines the array of supported commands */
 const uint8_t g_ble_ll_supp_cmds[BLE_LL_SUPP_CMD_LEN] =
 {
@@ -418,4 +453,6 @@ const uint8_t g_ble_ll_supp_cmds[BLE_LL_SUPP_CMD_LEN] =
     BLE_LL_SUPP_CMD_OCTET_37,
     BLE_LL_SUPP_CMD_OCTET_38,
     BLE_LL_SUPP_CMD_OCTET_39,
+    BLE_LL_SUPP_CMD_OCTET_40,           /* Octet 40 */
+    BLE_LL_SUPP_CMD_OCTET_41,
 };

@@ -23,8 +23,8 @@ syscfg.vals:
     # Default task settings
     OS_MAIN_STACK_SIZE: 4096
 
-    # Newtmgr is not supported in this app, so disable newtmgr-over-shell.
-    SHELL_NEWTMGR: 0
+    # SMP is not supported in this app, so disable smp-over-shell.
+    SHELL_MGMT: 0
 
     MSYS_1_BLOCK_COUNT: 48
 
@@ -58,16 +58,3 @@ syscfg.vals:
     BLE_MESH_APP_KEY_COUNT: 2
     BLE_MESH_MODEL_GROUP_COUNT: 2
     BLE_MESH_LABEL_COUNT: 3
-
-    BLE_MESH_DEBUG: 0
-    BLE_MESH_DEBUG_NET: 0
-    BLE_MESH_DEBUG_TRANS: 0
-    BLE_MESH_DEBUG_BEACON: 0
-    BLE_MESH_DEBUG_CRYPTO: 0
-    BLE_MESH_DEBUG_PROV: 0
-    BLE_MESH_DEBUG_ACCESS: 0
-    BLE_MESH_DEBUG_MODEL: 0
-    BLE_MESH_DEBUG_ADV: 0
-    BLE_MESH_DEBUG_LOW_POWER: 0
-    BLE_MESH_DEBUG_FRIEND: 0
-    BLE_MESH_DEBUG_PROXY: 0

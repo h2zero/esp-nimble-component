@@ -27,17 +27,11 @@ pkg.keywords:
 
 pkg.deps:
     - "@apache-mynewt-nimble/nimble"
-    - "@apache-mynewt-core/hw/mcu/dialog/da1469x"
+    - "@apache-mynewt-nimble/nimble/transport/da1469x/cmac_driver"
     - "@apache-mynewt-core/kernel/os"
 
 pkg.apis:
     - ble_transport
-
-# By explicitly marking 'cmac_fw_prepare' symbol as undefined we force
-# linker to pull object from firmware library which contains section with
-# firmware blob. This does not pull any extra symbols into our binary.
-pkg.lflags:
-    - -Wl,--undefined=cmac_fw_prepare
 
 pkg.init:
     da1469x_ble_hci_init: 100

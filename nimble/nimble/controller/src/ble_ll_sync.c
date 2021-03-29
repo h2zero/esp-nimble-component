@@ -30,10 +30,14 @@
 #include "controller/ble_ll_sched.h"
 #include "controller/ble_ll_whitelist.h"
 #include "controller/ble_ll_scan.h"
+#include "controller/ble_ll_resolv.h"
+#include "controller/ble_ll_rfmgmt.h"
 
 #include "nimble/ble.h"
 #include "nimble/hci_common.h"
 #include "nimble/ble_hci_trans.h"
+
+#include "ble_ll_conn_priv.h"
 
 #include "stats/stats.h"
 
@@ -45,20 +49,23 @@
 #define BLE_LL_SYNC_ESTABLISH_CNT 6
 
 #define BLE_LL_SYNC_CNT MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_CNT)
+#define BLE_LL_SYNC_LIST_CNT MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_LIST_CNT)
 
-#define BLE_LL_SYNC_SM_FLAG_ON_LIST         0x01
-#define BLE_LL_SYNC_SM_FLAG_PENDING         0x02
-#define BLE_LL_SYNC_SM_FLAG_ESTABLISHING    0x04
-#define BLE_LL_SYNC_SM_FLAG_ESTABLISHED     0x08
-#define BLE_LL_SYNC_SM_FLAG_SET_ANCHOR      0x10
-#define BLE_LL_SYNC_SM_FLAG_OFFSET_300      0x20
-#define BLE_LL_SYNC_SM_FLAG_SYNC_INFO       0x40
+#define BLE_LL_SYNC_SM_FLAG_RESERVED        0x0001
+#define BLE_LL_SYNC_SM_FLAG_ESTABLISHING    0x0002
+#define BLE_LL_SYNC_SM_FLAG_ESTABLISHED     0x0004
+#define BLE_LL_SYNC_SM_FLAG_SET_ANCHOR      0x0008
+#define BLE_LL_SYNC_SM_FLAG_OFFSET_300      0x0010
+#define BLE_LL_SYNC_SM_FLAG_SYNC_INFO       0x0020
+#define BLE_LL_SYNC_SM_FLAG_DISABLED        0x0040
+#define BLE_LL_SYNC_SM_FLAG_ADDR_RESOLVED   0x0080
+#define BLE_LL_SYNC_SM_FLAG_HCI_TRUNCATED   0x0100
 
 #define BLE_LL_SYNC_CHMAP_LEN               5
 #define BLE_LL_SYNC_ITVL_USECS              1250
 
 struct ble_ll_sync_sm {
-    uint8_t flags;
+    uint16_t flags;
 
     uint8_t adv_sid;
     uint8_t adv_addr[BLE_DEV_ADDR_LEN];
@@ -72,6 +79,8 @@ struct ble_ll_sync_sm {
     uint8_t chan_chain;
 
     uint8_t phy_mode;
+
+    uint8_t sync_pending_cnt;
 
     uint32_t timeout;
     uint16_t skip;
@@ -95,15 +104,77 @@ struct ble_ll_sync_sm {
     struct ble_npl_event sync_ev_end;
 
     uint8_t *next_report;
+
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+    struct ble_ll_conn_sm *transfer_conn;
+    uint8_t *transfer_received_ev;
+    uint16_t transfer_id;
+    uint16_t event_cntr_last_received;
+    uint8_t adv_addr_rpa[6];
+#endif
 };
 
 static struct ble_ll_sync_sm g_ble_ll_sync_sm[BLE_LL_SYNC_CNT];
 
-static unsigned int g_ble_ll_sync_pending;
+static struct {
+    uint8_t adv_sid;
+    uint8_t adv_addr[BLE_DEV_ADDR_LEN];
+    uint8_t adv_addr_type;
+} g_ble_ll_sync_adv_list[BLE_LL_SYNC_LIST_CNT];
 
-static struct ble_ll_sync_sm *g_ble_ll_sync_sm_establishing;
+static struct {
+    uint32_t timeout;
+    uint16_t max_skip;
+    uint16_t options;
+} g_ble_ll_sync_create_params;
+
+/* if this is set HCI LE Sync Create is pending */
+static uint8_t *g_ble_ll_sync_create_comp_ev;
+
 static struct ble_ll_sync_sm *g_ble_ll_sync_sm_current;
-static uint8_t *g_ble_ll_sync_comp_ev;
+
+static int
+ble_ll_sync_on_list(const uint8_t *addr, uint8_t addr_type, uint8_t sid)
+{
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(g_ble_ll_sync_adv_list); i++) {
+        if ((g_ble_ll_sync_adv_list[i].adv_sid == sid) &&
+                (g_ble_ll_sync_adv_list[i].adv_addr_type == addr_type) &&
+                !memcmp(g_ble_ll_sync_adv_list[i].adv_addr, addr, BLE_DEV_ADDR_LEN)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static int
+ble_ll_sync_list_get_free(void)
+{
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(g_ble_ll_sync_adv_list); i++) {
+        if (g_ble_ll_sync_adv_list[i].adv_sid == 0xff) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static bool
+ble_ll_sync_list_empty(void) {
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(g_ble_ll_sync_adv_list); i++) {
+        if (g_ble_ll_sync_adv_list[i].adv_sid != 0xff) {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 static uint8_t
 ble_ll_sync_get_handle(struct ble_ll_sync_sm *sm)
@@ -125,6 +196,17 @@ ble_ll_sync_sm_clear(struct ble_ll_sync_sm *sm)
         ble_hci_trans_buf_free(sm->next_report);
     }
 
+    if (g_ble_ll_sync_sm_current == sm) {
+        ble_phy_disable();
+        ble_ll_state_set(BLE_LL_STATE_STANDBY);
+        g_ble_ll_sync_sm_current = NULL;
+        ble_ll_scan_chk_resume();
+    }
+
+    ble_ll_rfmgmt_release();
+
+    BLE_LL_ASSERT(sm->sync_ev_end.ev.ev_queued == 0);
+    BLE_LL_ASSERT(sm->sch.enqueued == 0);
     memset(sm, 0, sizeof(*sm));
 }
 
@@ -153,89 +235,6 @@ ble_ll_sync_phy_mode_to_hci(int8_t phy_mode)
 #endif
 }
 
-static void
-ble_ll_sync_est_event_success(struct ble_ll_sync_sm *sm)
-{
-    struct hci_le_subev_periodic_adv_sync_estab *evt;
-    uint8_t *evbuf;
-
-    BLE_LL_ASSERT(g_ble_ll_sync_comp_ev);
-
-    if (ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_ESTAB)) {
-        evbuf = g_ble_ll_sync_comp_ev;
-        evbuf[0] = BLE_HCI_EVCODE_LE_META;
-        evbuf[1] = BLE_HCI_LE_PERIODIC_ADV_SYNC_ESTAB_LEN;
-        evbuf[2] = BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_ESTAB;
-
-        evt = (void *) evbuf + 3;
-
-        evt->status = BLE_ERR_SUCCESS;
-        evt->sync_handle = htole16(ble_ll_sync_get_handle(sm));
-        evt->sid = sm->adv_sid;
-        evt->adv_addr_type = sm->adv_addr_type;
-        memcpy(evt->adv_addr, sm->adv_addr, BLE_DEV_ADDR_LEN);
-        evt->adv_phy = ble_ll_sync_phy_mode_to_hci(sm->phy_mode);
-        evt->per_adv_ival = htole16(sm->itvl);
-        evt->adv_clk_accuracy = sm->sca;
-
-        ble_ll_hci_event_send(evbuf);
-    } else {
-        ble_hci_trans_buf_free(g_ble_ll_sync_comp_ev);
-    }
-
-    g_ble_ll_sync_comp_ev = NULL;
-}
-
-static void
-ble_ll_sync_est_event_failed(uint8_t status)
-{
-    struct hci_le_subev_periodic_adv_sync_estab *evt;
-    uint8_t *evbuf;
-
-    BLE_LL_ASSERT(g_ble_ll_sync_comp_ev);
-
-    if (ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_ESTAB)) {
-        evbuf = g_ble_ll_sync_comp_ev;
-        evbuf[0] = BLE_HCI_EVCODE_LE_META;
-        evbuf[1] = BLE_HCI_LE_PERIODIC_ADV_SYNC_ESTAB_LEN;
-        evbuf[2] = BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_ESTAB;
-
-        evt = (void *) evbuf + 3;
-
-        memset(evt, 0, sizeof(*evt));
-        evt->status = status;
-
-        ble_ll_hci_event_send(evbuf);
-    } else {
-        ble_hci_trans_buf_free(g_ble_ll_sync_comp_ev);
-    }
-
-    g_ble_ll_sync_comp_ev = NULL;
-}
-
-static void
-ble_ll_sync_lost_event(struct ble_ll_sync_sm *sm)
-{
-    struct hci_le_subev_periodic_adv_sync_lost *evt;
-    uint8_t *evbuf;
-
-    if (ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_LOST)) {
-        evbuf = ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_EVT_HI);
-        if (evbuf) {
-            evbuf[0] = BLE_HCI_EVCODE_LE_META;
-            evbuf[1] = BLE_HCI_LE_PERIODIC_ADV_SYNC_LOST_LEN;
-            evbuf[2] = BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_LOST;
-
-            evt = (void *) evbuf + 3;
-            evt->sync_handle = htole16(ble_ll_sync_get_handle(sm));
-
-            ble_ll_hci_event_send(evbuf);
-        }
-    }
-
-    ble_ll_sync_sm_clear(sm);
-}
-
 static struct ble_ll_sync_sm *
 ble_ll_sync_find(const uint8_t *addr, uint8_t addr_type, uint8_t sid)
 {
@@ -257,29 +256,161 @@ ble_ll_sync_find(const uint8_t *addr, uint8_t addr_type, uint8_t sid)
     return NULL;
 }
 
-static struct ble_ll_sync_sm *
-ble_ll_sync_get(const uint8_t *addr, uint8_t addr_type, uint8_t sid)
+static uint16_t
+get_max_skip(uint32_t interval_us, uint32_t timeout_us)
 {
-    struct ble_ll_sync_sm *sm;
-    int i;
+    uint16_t max_skip;
 
-    sm = ble_ll_sync_find(addr, addr_type, sid);
-    if (sm) {
-        return sm;
+    BLE_LL_ASSERT(interval_us);
+    BLE_LL_ASSERT(timeout_us);
+
+    if (timeout_us <= interval_us) {
+        return 0;
     }
 
-    for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
-        sm = &g_ble_ll_sync_sm[i];
+    /*
+     * Calculate max allowed skip to receive something before timeout. We adjust
+     * current skip value to be no more than max_skip-6 so we have at least few
+     * attempts to receive an event (so we don't timeout immediately after just
+     * one missed event).
+     */
 
-        if (!sm->flags) {
-            sm->adv_sid = sid;
-            sm->adv_addr_type = addr_type;
-            memcpy(&sm->adv_addr, addr, BLE_DEV_ADDR_LEN);
-            return sm;
+    max_skip = (timeout_us / interval_us) - 1;
+
+    if (max_skip < 6) {
+        return 0;
+    }
+
+    return max_skip - 6;
+}
+
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+static void
+ble_ll_sync_transfer_received(struct ble_ll_sync_sm *sm, uint8_t status)
+{
+    struct ble_hci_ev_le_subev_periodic_adv_sync_transfer *ev;
+    struct ble_hci_ev *hci_ev;
+
+    BLE_LL_ASSERT(sm->transfer_received_ev);
+
+    if (ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_TRANSFER)) {
+        hci_ev = (void *) sm->transfer_received_ev;
+
+        hci_ev->opcode = BLE_HCI_EVCODE_LE_META;
+        hci_ev->length = sizeof(*ev);
+
+        ev = (void *) hci_ev->data;
+        ev->subev_code = BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_TRANSFER;
+
+        ev->status = status;
+        ev->conn_handle = htole16(sm->transfer_conn->conn_handle);
+        ev->service_data = htole16(sm->transfer_id);
+
+        /* this is ignored by host on error */
+        ev->sync_handle = htole16(ble_ll_sync_get_handle(sm));
+        ev->sid = sm->adv_sid;
+        ev->peer_addr_type = sm->adv_addr_type;
+        if (sm->flags & BLE_LL_SYNC_SM_FLAG_ADDR_RESOLVED) {
+            ev->peer_addr_type += 2;
+        }
+        memcpy(ev->peer_addr, sm->adv_addr, BLE_DEV_ADDR_LEN);
+        ev->phy = ble_ll_sync_phy_mode_to_hci(sm->phy_mode);
+        ev->interval = htole16(sm->itvl);
+        ev->aca = sm->sca;
+
+        ble_ll_hci_event_send(hci_ev);
+    } else {
+        ble_hci_trans_buf_free(sm->transfer_received_ev);
+    }
+
+    sm->transfer_received_ev = NULL;
+    sm->transfer_conn = NULL;
+}
+#endif
+
+static void
+ble_ll_sync_est_event_success(struct ble_ll_sync_sm *sm)
+{
+    struct ble_hci_ev_le_subev_periodic_adv_sync_estab *ev;
+    struct ble_hci_ev *hci_ev;
+
+    BLE_LL_ASSERT(g_ble_ll_sync_create_comp_ev);
+
+    if (ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_ESTAB)) {
+        hci_ev = (void *) g_ble_ll_sync_create_comp_ev;
+
+        hci_ev->opcode = BLE_HCI_EVCODE_LE_META;
+        hci_ev->length = sizeof(*ev);
+        ev = (void *) hci_ev->data;
+
+        ev->subev_code = BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_ESTAB;
+        ev->status = BLE_ERR_SUCCESS;
+        ev->sync_handle = htole16(ble_ll_sync_get_handle(sm));
+        ev->sid = sm->adv_sid;
+        ev->peer_addr_type = sm->adv_addr_type;
+        if (sm->flags & BLE_LL_SYNC_SM_FLAG_ADDR_RESOLVED) {
+            ev->peer_addr_type += 2;
+        }
+        memcpy(ev->peer_addr, sm->adv_addr, BLE_DEV_ADDR_LEN);
+        ev->phy = ble_ll_sync_phy_mode_to_hci(sm->phy_mode);
+        ev->interval = htole16(sm->itvl);
+        ev->aca = sm->sca;
+
+        ble_ll_hci_event_send(hci_ev);
+    } else {
+        ble_hci_trans_buf_free(g_ble_ll_sync_create_comp_ev);
+    }
+
+    g_ble_ll_sync_create_comp_ev = NULL;
+}
+
+static void
+ble_ll_sync_est_event_failed(uint8_t status)
+{
+    struct ble_hci_ev_le_subev_periodic_adv_sync_estab *ev;
+    struct ble_hci_ev *hci_ev;
+
+    BLE_LL_ASSERT(g_ble_ll_sync_create_comp_ev);
+
+    if (ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_ESTAB)) {
+        hci_ev = (void *) g_ble_ll_sync_create_comp_ev;
+
+        hci_ev->opcode = BLE_HCI_EVCODE_LE_META;
+        hci_ev->length = sizeof(*ev);
+        ev = (void *) hci_ev->data;
+
+        memset(ev, 0, sizeof(*ev));
+
+        ev->subev_code = BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_ESTAB;
+        ev->status = status;
+
+        ble_ll_hci_event_send(hci_ev);
+    } else {
+        ble_hci_trans_buf_free(g_ble_ll_sync_create_comp_ev);
+    }
+
+    g_ble_ll_sync_create_comp_ev = NULL;
+}
+
+static void
+ble_ll_sync_lost_event(struct ble_ll_sync_sm *sm)
+{
+    struct ble_hci_ev_le_subev_periodic_adv_sync_lost *ev;
+    struct ble_hci_ev *hci_ev;
+
+    if (ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_LOST)) {
+        hci_ev = (void *) ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_EVT_HI);
+        if (hci_ev) {
+            hci_ev->opcode = BLE_HCI_EVCODE_LE_META;
+            hci_ev->length = sizeof(*ev);
+            ev = (void *) hci_ev->data;
+
+            ev->subev_code = BLE_HCI_LE_SUBEV_PERIODIC_ADV_SYNC_LOST;
+            ev->sync_handle = htole16(ble_ll_sync_get_handle(sm));
+
+            ble_ll_hci_event_send(hci_ev);
         }
     }
-
-    return NULL;
 }
 
 static void
@@ -287,9 +418,6 @@ ble_ll_sync_current_sm_over(void)
 {
     /* Disable the PHY */
     ble_phy_disable();
-
-    /* Disable the wfr timer */
-    ble_ll_wfr_disable();
 
     /* Link-layer is in standby state now */
     ble_ll_state_set(BLE_LL_STATE_STANDBY);
@@ -308,8 +436,9 @@ ble_ll_sync_event_start_cb(struct ble_ll_sched_item *sch)
 
     /* Set current connection state machine */
     sm = sch->cb_arg;
-    g_ble_ll_sync_sm_current = sm;
     BLE_LL_ASSERT(sm);
+
+    g_ble_ll_sync_sm_current = sm;
 
     /* Disable whitelisting */
     ble_ll_whitelist_disable();
@@ -346,11 +475,16 @@ ble_ll_sync_event_start_cb(struct ble_ll_sched_item *sch)
          */
         sm->flags |= BLE_LL_SYNC_SM_FLAG_SET_ANCHOR;
 
-        /* set wfr timer, for first PDU pointed with AuxPtr we use offset
-         * unit, for other PDU we use current window widening
+        /* Set WFR timer.
+         * If establishing we always adjust with offset unit.
+         * If this is first packet of sync (one that was pointed by from
+         * SyncInfo we don't adjust WFT with window widening.
          */
-        if (sm->flags & BLE_LL_SYNC_SM_FLAG_SYNC_INFO) {
+        if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHING) {
             wfr_usecs = (sm->flags & BLE_LL_SYNC_SM_FLAG_OFFSET_300) ? 300 : 30;
+            if (!(sm->flags & BLE_LL_SYNC_SM_FLAG_SYNC_INFO)) {
+                wfr_usecs += 2 * sm->window_widening;
+            }
         } else {
             wfr_usecs = 2 * sm->window_widening;
         }
@@ -376,35 +510,21 @@ ble_ll_sync_event_start_cb(struct ble_ll_sched_item *sch)
 int
 ble_ll_sync_rx_isr_start(uint8_t pdu_type, struct ble_mbuf_hdr *rxhdr)
 {
-    struct ble_ll_sync_sm *sm = g_ble_ll_sync_sm_current;
-
     BLE_LL_ASSERT(g_ble_ll_sync_sm_current);
 
     /* this also handles chains as those have same PDU type */
     if (pdu_type != BLE_ADV_PDU_TYPE_AUX_SYNC_IND) {
-        ble_ll_event_send(&sm->sync_ev_end);
+        ble_ll_event_send(&g_ble_ll_sync_sm_current->sync_ev_end);
         ble_ll_sync_current_sm_over();
         STATS_INC(ble_ll_stats, sched_invalid_pdu);
         return -1;
-    }
-
-    /* Set anchor point (and last) if 1st rxd frame in sync event.
-     * According to spec this should be done even if CRC is not valid so we
-     * can store it here
-     */
-    if (sm->flags & BLE_LL_SYNC_SM_FLAG_SET_ANCHOR) {
-        sm->flags &= ~BLE_LL_SYNC_SM_FLAG_SET_ANCHOR;
-
-        sm->anchor_point = rxhdr->beg_cputime;
-        sm->anchor_point_usecs = rxhdr->rem_usecs;
-        sm->last_anchor_point = sm->anchor_point;
     }
 
     STATS_INC(ble_ll_stats, sync_received);
     return 0;
 }
 
-int
+static int
 ble_ll_sync_parse_ext_hdr(struct os_mbuf *om, uint8_t **aux, int8_t *tx_power)
 {
     uint8_t *rxbuf = om->om_data;
@@ -419,21 +539,15 @@ ble_ll_sync_parse_ext_hdr(struct os_mbuf *om, uint8_t **aux, int8_t *tx_power)
         return -1;
     }
     ext_hdr_len = rxbuf[2] & 0x3F;
-    if (ext_hdr_len > pdu_len) {
+    if (ext_hdr_len > (pdu_len - 1)) {
         return -1;
     }
-
-    os_mbuf_adj(om, 3);
 
     if (ext_hdr_len) {
         ext_hdr_flags = rxbuf[3];
         ext_hdr = &rxbuf[4];
 
         i = 0;
-
-        /* TODO should we ignore packets with extra data instead of just
-         * skipping fields?
-         */
 
         /* there should be no AdvA in Sync or chain, skip it */
         if (ext_hdr_flags & (1 << BLE_LL_EXT_ADV_ADVA_BIT)) {
@@ -445,8 +559,8 @@ ble_ll_sync_parse_ext_hdr(struct os_mbuf *om, uint8_t **aux, int8_t *tx_power)
             i += BLE_LL_EXT_ADV_TARGETA_SIZE;
         }
 
-        /* there should be no RFU in Sync or chain, skip it */
-        if (ext_hdr_flags & (1 << BLE_LL_EXT_ADV_RFU_BIT)) {
+        /* Ignore CTE for now */
+        if (ext_hdr_flags & (1 << BLE_LL_EXT_ADV_CTE_INFO_BIT)) {
             i += 1;
         }
 
@@ -459,8 +573,6 @@ ble_ll_sync_parse_ext_hdr(struct os_mbuf *om, uint8_t **aux, int8_t *tx_power)
         if (ext_hdr_flags & (1 << BLE_LL_EXT_ADV_AUX_PTR_BIT)) {
             *aux = ext_hdr + i;
             i += BLE_LL_EXT_ADV_AUX_PTR_SIZE;
-        } else {
-            *aux = NULL;
         }
 
         /* there should be no SyncInfo in Sync or chain, skip it */
@@ -471,134 +583,149 @@ ble_ll_sync_parse_ext_hdr(struct os_mbuf *om, uint8_t **aux, int8_t *tx_power)
         if (ext_hdr_flags & (1 << BLE_LL_EXT_ADV_TX_POWER_BIT)) {
             *tx_power = *(ext_hdr + i);
             i += BLE_LL_EXT_ADV_TX_POWER_SIZE;
-        } else {
-            *tx_power = 127; /* not available */
         }
 
         /* TODO Handle ACAD if needed */
-    }
 
-    if (ext_hdr_len) {
-        /* Adjust mbuf to contain advertising data only */
-        os_mbuf_adj(om, ext_hdr_len);
+        /* sanity check */
+        if (i > ext_hdr_len) {
+            return -1;
+        }
     }
 
     return pdu_len - ext_hdr_len - 1;
 }
 
 static void
+ble_ll_sync_adjust_ext_hdr(struct os_mbuf *om)
+{
+    uint8_t *rxbuf = om->om_data;
+    uint8_t ext_hdr_len;
+
+    /* this was already verified in ble_ll_sync_parse_ext_hdr() */
+    ext_hdr_len = rxbuf[2] & 0x3F;
+
+    os_mbuf_adj(om, 3 + ext_hdr_len);
+}
+
+static void
 ble_ll_sync_send_truncated_per_adv_rpt(struct ble_ll_sync_sm *sm, uint8_t *evbuf)
 {
-    struct hci_le_subev_periodic_adv_rpt *evt;
+    struct ble_hci_ev_le_subev_periodic_adv_rpt *ev;
+    struct ble_hci_ev *hci_ev;
 
-    if (!ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_RPT)) {
+    if (!ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_RPT) ||
+        (sm->flags & BLE_LL_SYNC_SM_FLAG_DISABLED)) {
         ble_hci_trans_buf_free(evbuf);
         return;
     }
 
-    evbuf[0] = BLE_HCI_EVCODE_LE_META;
-    evbuf[1] = BLE_HCI_LE_PERIODIC_ADV_RPT_LEN;
-    evbuf[2] = BLE_HCI_LE_SUBEV_PERIODIC_ADV_RPT;
+    hci_ev = (void *) evbuf;
 
-    evt = (void *) evbuf + 3;
-    evt->sync_handle = htole16(ble_ll_sync_get_handle(sm));
-    evt->tx_power = 127; /* not available */
-    evt->rssi = 127; /* not available */
-    evt->unused = 0xff;
-    evt->data_status = BLE_HCI_PERIODIC_DATA_STATUS_TRUNCATED;
-    evt->data_length = 0;
-    ble_ll_hci_event_send(evbuf);
+    hci_ev->opcode = BLE_HCI_EVCODE_LE_META;
+    hci_ev->length = sizeof(*ev);
+    ev = (void *) hci_ev->data;
+
+    ev->subev_code = BLE_HCI_LE_SUBEV_PERIODIC_ADV_RPT;
+    ev->sync_handle = htole16(ble_ll_sync_get_handle(sm));
+    ev->tx_power = 127; /* not available */
+    ev->rssi = 127; /* not available */
+    ev->cte_type = 0xff;
+    ev->data_status = BLE_HCI_PERIODIC_DATA_STATUS_TRUNCATED;
+    ev->data_len = 0;
+
+    ble_ll_hci_event_send(hci_ev);
 }
 
-static int
+static void
 ble_ll_sync_send_per_adv_rpt(struct ble_ll_sync_sm *sm, struct os_mbuf *rxpdu,
-                             struct ble_mbuf_hdr *hdr, uint8_t **aux)
+                             int8_t rssi, int8_t tx_power, int datalen,
+                             uint8_t *aux, bool aux_scheduled)
 {
-    struct hci_le_subev_periodic_adv_rpt *evt;
-    uint8_t *evbuf_next = NULL;
-    uint16_t max_event_len;
-    int8_t tx_power;
-    uint8_t *evbuf;
-    int datalen;
+    struct ble_hci_ev_le_subev_periodic_adv_rpt *ev;
+    struct ble_hci_ev *hci_ev;
+    struct ble_hci_ev *hci_ev_next = NULL;
+    uint8_t max_data_len;
     int offset;
-    int rc;
-
-    if (!ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_RPT)) {
-        return -1;
-    }
-
-    datalen = ble_ll_sync_parse_ext_hdr(rxpdu, aux, &tx_power);
-    if (datalen < 0) {
-        /* we got bad packet but were chaining, send truncated report */
-        if (sm->next_report) {
-            ble_ll_sync_send_truncated_per_adv_rpt(sm, sm->next_report);
-            sm->next_report = NULL;
-        }
-        return -1;
-    }
 
     /* use next report buffer if present, this means we are chaining */
     if (sm->next_report) {
-        evbuf = sm->next_report;
+        hci_ev = (void *) sm->next_report;
         sm->next_report = NULL;
     } else {
-        evbuf = ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_EVT_LO);
-        if (!evbuf) {
-            return -1;
+        hci_ev = (void * )ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_EVT_LO);
+        if (!hci_ev) {
+            goto done;
         }
     }
 
-    /* Max_event_len contains advertising data and BLE_HCI_EVENT_HDR_LEN as this
-     * is related to the buffer available for the event. The maximum is 255 + 2
-     */
+    max_data_len = BLE_LL_MAX_EVT_LEN - sizeof(*hci_ev) - sizeof(*ev);
     offset = 0;
-    max_event_len = min(UINT8_MAX + BLE_HCI_EVENT_HDR_LEN, BLE_LL_MAX_EVT_LEN);
 
     do {
-        if (evbuf_next) {
-            evbuf = evbuf_next;
-            evbuf_next = NULL;
+        if (hci_ev_next) {
+            hci_ev = hci_ev_next;
+            hci_ev_next = NULL;
         }
 
-        evbuf[0] = BLE_HCI_EVCODE_LE_META;
-        evbuf[1] = BLE_HCI_LE_PERIODIC_ADV_RPT_LEN;
-        evbuf[2] = BLE_HCI_LE_SUBEV_PERIODIC_ADV_RPT;
+        hci_ev->opcode = BLE_HCI_EVCODE_LE_META;
+        hci_ev->length = sizeof(*ev);
 
-        evt = (void *) evbuf + 3;
-        evt->sync_handle = htole16(ble_ll_sync_get_handle(sm));
-        evt->tx_power = tx_power;
-        evt->rssi = hdr->rxinfo.rssi;
-        evt->unused = 0xff;
+        ev = (void *) hci_ev->data;
 
-        evt->data_length = min(max_event_len - sizeof(*evt) - 3, datalen - offset);
+        ev->subev_code = BLE_HCI_LE_SUBEV_PERIODIC_ADV_RPT;
+        ev->sync_handle = htole16(ble_ll_sync_get_handle(sm));
+        ev->tx_power = tx_power;
+        ev->rssi = rssi;
+        ev->cte_type = 0xff;
+
+        ev->data_len = min(max_data_len, datalen - offset);
         /* adjust event length */
-        evbuf[1] += evt->data_length;
+        hci_ev->length += ev->data_len;
 
-        os_mbuf_copydata(rxpdu, offset, evt->data_length, evt->data);
-        offset += evt->data_length;
+        os_mbuf_copydata(rxpdu, offset, ev->data_len, ev->data);
+        offset += ev->data_len;
 
         /* Need another event for next fragment of this PDU */
-        if ((offset < datalen) || *aux) {
-            evbuf_next = ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_EVT_LO);
-            if (evbuf_next) {
-                evt->data_status = BLE_HCI_PERIODIC_DATA_STATUS_INCOMPLETE;
-                rc = 0;
+        if (offset < datalen) {
+            hci_ev_next = (void *) ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_EVT_LO);
+            if (hci_ev_next) {
+                ev->data_status = BLE_HCI_PERIODIC_DATA_STATUS_INCOMPLETE;
             } else {
-                evt->data_status = BLE_HCI_PERIODIC_DATA_STATUS_TRUNCATED;
-                rc = -1;
+                ev->data_status = BLE_HCI_PERIODIC_DATA_STATUS_TRUNCATED;
             }
         } else {
-            evt->data_status = BLE_HCI_PERIODIC_DATA_STATUS_COMPLETE;
-            rc = 0;
+            /* last report of this PDU */
+            if (aux) {
+                if (aux_scheduled) {
+                    /* if we scheduled aux, we need buffer for next report */
+                    hci_ev_next = (void *) ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_EVT_LO);
+                    if (hci_ev_next) {
+                        ev->data_status = BLE_HCI_PERIODIC_DATA_STATUS_INCOMPLETE;
+                    } else {
+                        ev->data_status = BLE_HCI_PERIODIC_DATA_STATUS_TRUNCATED;
+                    }
+                } else {
+                    ev->data_status = BLE_HCI_PERIODIC_DATA_STATUS_TRUNCATED;
+                }
+            } else {
+                ev->data_status = BLE_HCI_PERIODIC_DATA_STATUS_COMPLETE;
+            }
         }
+        ble_ll_hci_event_send(hci_ev);
+    } while ((offset < datalen) && hci_ev_next);
 
-        ble_ll_hci_event_send(evbuf);
-    } while ((offset < datalen) && evbuf_next);
+done:
+    /* this means that we already truncated data (or didn't sent first at all)
+     * in HCI report but has scheduled for next PDU in chain. In that case mark
+     * it so that we end event properly when next PDU is received.
+     * */
+    if (aux_scheduled && !hci_ev_next) {
+        sm->flags |= BLE_LL_SYNC_SM_FLAG_HCI_TRUNCATED;
+    }
 
     /* store for chain */
-    sm->next_report = evbuf_next;
-
-    return rc;
+    sm->next_report = (void *) hci_ev_next;
 }
 
 /**
@@ -616,13 +743,10 @@ ble_ll_sync_send_per_adv_rpt(struct ble_ll_sync_sm *sm, struct os_mbuf *rxpdu,
 int
 ble_ll_sync_rx_isr_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
 {
-    struct ble_ll_sync_sm *sm = g_ble_ll_sync_sm_current;
     struct ble_mbuf_hdr *ble_hdr;
     struct os_mbuf *rxpdu;
 
-    BLE_LL_ASSERT(sm);
-
-    ble_ll_sync_current_sm_over();
+    BLE_LL_ASSERT(g_ble_ll_sync_sm_current);
 
     /* type was verified in isr_start */
 
@@ -631,15 +755,18 @@ ble_ll_sync_rx_isr_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
         ble_phy_rxpdu_copy(rxbuf, rxpdu);
 
         ble_hdr = BLE_MBUF_HDR_PTR(rxpdu);
-        ble_hdr->rxinfo.user_data = sm;
+        ble_hdr->rxinfo.user_data = g_ble_ll_sync_sm_current;
 
         ble_ll_rx_pdu_in(rxpdu);
     } else {
         STATS_INC(ble_ll_stats, sync_rx_buf_err);
-        ble_ll_event_send(&sm->sync_ev_end);
+        ble_ll_event_send(&g_ble_ll_sync_sm_current->sync_ev_end);
     }
 
-    return -1;
+    /* PHY is disabled here */
+    ble_ll_sync_current_sm_over();
+
+    return 1;
 }
 
 /**
@@ -740,7 +867,6 @@ ble_ll_sync_chain_start_cb(struct ble_ll_sched_item *sch)
     sm = sch->cb_arg;
     g_ble_ll_sync_sm_current = sm;
     BLE_LL_ASSERT(sm);
-    BLE_LL_ASSERT(sm->next_report);
 
     /* Disable whitelisting */
     ble_ll_whitelist_disable();
@@ -822,71 +948,84 @@ ble_ll_sync_schedule_chain(struct ble_ll_sync_sm *sm, struct ble_mbuf_hdr *hdr,
     sm->sch.cb_arg = sm;
     sm->sch.sched_type = BLE_LL_SCHED_TYPE_SYNC;
 
-    return ble_ll_sched_sync(&sm->sch, hdr, offset, sm->phy_mode);
+    return ble_ll_sched_sync(&sm->sch, hdr->beg_cputime, hdr->rem_usecs,
+                             offset, sm->phy_mode);
 }
 
 static void
 ble_ll_sync_established(struct ble_ll_sync_sm *sm)
 {
-    int i;
-
-    BLE_LL_ASSERT(sm == g_ble_ll_sync_sm_establishing);
-    BLE_LL_ASSERT(g_ble_ll_sync_pending);
+    BLE_LL_ASSERT(sm->sync_pending_cnt);
 
     /* mark as established */
-    ble_ll_sync_est_event_success(sm);
+
     sm->flags |= BLE_LL_SYNC_SM_FLAG_ESTABLISHED;
     sm->flags &= ~BLE_LL_SYNC_SM_FLAG_ESTABLISHING;
 
-    /* clear as we are not longer pending sync here */
-    for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
-        g_ble_ll_sync_sm[i].flags &= ~BLE_LL_SYNC_SM_FLAG_PENDING;
-    }
+    sm->sync_pending_cnt = 0;
 
-    g_ble_ll_sync_sm_establishing = NULL;
-    g_ble_ll_sync_pending = 0;
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+    if (sm->transfer_conn) {
+        ble_ll_sync_transfer_received(sm, BLE_ERR_SUCCESS);
+        return;
+    }
+#endif
+
+    ble_ll_sync_est_event_success(sm);
 }
 
 static void
 ble_ll_sync_check_failed(struct ble_ll_sync_sm *sm)
 {
-    int i;
-
-    BLE_LL_ASSERT(sm == g_ble_ll_sync_sm_establishing);
-    BLE_LL_ASSERT(g_ble_ll_sync_pending);
+    BLE_LL_ASSERT(sm->sync_pending_cnt);
 
     /* if we can retry on next event */
-    if (--g_ble_ll_sync_pending) {
+    if (--sm->sync_pending_cnt) {
         return;
     }
 
-    ble_ll_sync_est_event_failed(BLE_ERR_CONN_ESTABLISHMENT);
-
     sm->flags &= ~BLE_LL_SYNC_SM_FLAG_ESTABLISHING;
 
-    /* clear as we are not longer pending sync here */
-    for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
-        g_ble_ll_sync_sm[i].flags &= ~BLE_LL_SYNC_SM_FLAG_PENDING;
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+    if (sm->transfer_conn) {
+        ble_ll_sync_transfer_received(sm, BLE_ERR_CONN_ESTABLISHMENT);
+        return;
     }
+#endif
 
-    g_ble_ll_sync_sm_establishing = NULL;
-    g_ble_ll_sync_pending = 0;
+    ble_ll_sync_est_event_failed(BLE_ERR_CONN_ESTABLISHMENT);
 }
 
 void
 ble_ll_sync_rx_pkt_in(struct os_mbuf *rxpdu, struct ble_mbuf_hdr *hdr)
 {
     struct ble_ll_sync_sm *sm = hdr->rxinfo.user_data;
+    bool aux_scheduled = false;
+    int8_t tx_power = 127; /* defaults to not available */
     uint8_t *aux = NULL;
+    int datalen;
 
     BLE_LL_ASSERT(sm);
 
-    /* this could happen if sync was terminated while pkt_in was already
-     * in LL queue, just drop in that case
+    /* this could happen if sync was cancelled or terminated while pkt_in was
+     * already in LL queue, just drop in that case
      */
     if (!sm->flags) {
         ble_ll_scan_chk_resume();
+        ble_ll_rfmgmt_release();
         return;
+    }
+
+    /* Set anchor point (and last) if 1st rxd frame in sync event.
+     * According to spec this should be done even if CRC is not valid so we
+     * can store it here
+     */
+    if (sm->flags & BLE_LL_SYNC_SM_FLAG_SET_ANCHOR) {
+        sm->flags &= ~BLE_LL_SYNC_SM_FLAG_SET_ANCHOR;
+
+        sm->anchor_point = hdr->beg_cputime;
+        sm->anchor_point_usecs = hdr->rem_usecs;
+        sm->last_anchor_point = sm->anchor_point;
     }
 
     /* CRC error, end event */
@@ -895,34 +1034,67 @@ ble_ll_sync_rx_pkt_in(struct os_mbuf *rxpdu, struct ble_mbuf_hdr *hdr)
         goto end_event;
     }
 
-    /* if packet is good we send sync established here */
-    if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHING) {
-        ble_ll_sync_established(sm);
-    }
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+    /* save last pa counter */
+    sm->event_cntr_last_received = sm->event_cntr;
+#endif
 
-    /* send report to host, if this fails we end event */
-    if (ble_ll_sync_send_per_adv_rpt(sm, rxpdu, hdr, &aux) < 0) {
+    /* this means we are chaining but due to low buffers already sent data
+     * truncated report to host (or didn't sent any at all). If this happens
+     * next_buf should be already set to NULL and we just end event.
+     */
+    if (sm->flags & BLE_LL_SYNC_SM_FLAG_HCI_TRUNCATED) {
+        BLE_LL_ASSERT(!sm->next_report);
         goto end_event;
     }
 
-    /* schedule for chain packet if AUX pointer was present */
-    if (sm->next_report && aux) {
-        if (ble_ll_sync_schedule_chain(sm, hdr, aux) < 0) {
+    if (ble_ll_hci_is_le_event_enabled(BLE_HCI_LE_SUBEV_PERIODIC_ADV_RPT) &&
+        !(sm->flags & BLE_LL_SYNC_SM_FLAG_DISABLED)) {
+        /* get ext header data */
+        datalen = ble_ll_sync_parse_ext_hdr(rxpdu, &aux, &tx_power);
+        if (datalen < 0) {
+            /* we got bad packet, end event */
             goto end_event;
         }
 
-        /* if chain was scheduled we don't end event yet */
-        /* TODO should we check resume only if offset is high? */
+        /* if aux is present, we need to schedule ASAP */
+        if (aux && (ble_ll_sync_schedule_chain(sm, hdr, aux) == 0)) {
+            aux_scheduled = true;
+        }
+
+        /* in case data reporting is enabled we need to send sync established here */
+        if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHING) {
+            ble_ll_sync_established(sm);
+        }
+
+        /* Adjust rxpdu to contain advertising data only */
+        ble_ll_sync_adjust_ext_hdr(rxpdu);
+
+        /* send reports from this PDU */
+        ble_ll_sync_send_per_adv_rpt(sm, rxpdu, hdr->rxinfo.rssi, tx_power,
+                                     datalen, aux, aux_scheduled);
+    } else {
+        /* we need to establish link even if reporting was disabled */
+        if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHING) {
+            ble_ll_sync_established(sm);
+        }
+    }
+
+    /* if chain was scheduled we don't end event yet */
+    /* TODO should we check resume only if offset is high? */
+    if (aux_scheduled) {
         ble_ll_scan_chk_resume();
+        ble_ll_rfmgmt_release();
         return;
     }
 
 end_event:
     ble_ll_event_send(&sm->sync_ev_end);
+    ble_ll_rfmgmt_release();
 }
 
 static int
-ble_ll_sync_next_event(struct ble_ll_sync_sm *sm)
+ble_ll_sync_next_event(struct ble_ll_sync_sm *sm, uint32_t cur_ww_adjust)
 {
     uint32_t cur_ww;
     uint32_t max_ww;
@@ -967,21 +1139,11 @@ ble_ll_sync_next_event(struct ble_ll_sync_sm *sm)
                                                sm->last_anchor_point,
                                                sm->sca);
 
+    cur_ww += cur_ww_adjust;
+
     max_ww = (sm->itvl * (BLE_LL_SYNC_ITVL_USECS / 2)) - BLE_LL_IFS;
     if (cur_ww >= max_ww) {
         return -1;
-    }
-
-    /* if we are establishing, adjust window widening with offset unit
-     * uncertainty, since we set anchor point in the middle of offset window
-     * it is enough to adjust for half of offset
-     */
-    if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHING) {
-        if (sm->flags & BLE_LL_SYNC_SM_FLAG_OFFSET_300) {
-            cur_ww += 150;
-        } else {
-            cur_ww += 15;
-        }
     }
 
     cur_ww += BLE_LL_JITTER_USECS;
@@ -1016,6 +1178,8 @@ ble_ll_sync_event_end(struct ble_npl_event *ev)
     sm = ble_npl_event_get_arg(ev);
     BLE_LL_ASSERT(sm);
 
+    ble_ll_rfmgmt_release();
+
     if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHING) {
         ble_ll_sync_check_failed(sm);
     }
@@ -1023,16 +1187,15 @@ ble_ll_sync_event_end(struct ble_npl_event *ev)
     /* Check if we need to resume scanning */
     ble_ll_scan_chk_resume();
 
-#ifdef BLE_XCVR_RFCLK
-    ble_ll_sched_rfclk_chk_restart();
-#endif
-
     /* Remove any end events that might be enqueued */
     ble_npl_eventq_remove(&g_ble_ll_data.ll_evq, &sm->sync_ev_end);
 
-    /* don't schedule next event if sync is not established nor establishing */
+    /* don't schedule next event if sync is not established nor establishing
+     * at this point SM is no longer valid
+     */
     if (!(sm->flags & (BLE_LL_SYNC_SM_FLAG_ESTABLISHED |
                        BLE_LL_SYNC_SM_FLAG_ESTABLISHING))) {
+        ble_ll_sync_sm_clear(sm);
         return;
     }
 
@@ -1040,23 +1203,30 @@ ble_ll_sync_event_end(struct ble_npl_event *ev)
      * must send truncated report to host
      */
     if (sm->next_report) {
+        BLE_LL_ASSERT(!(sm->flags & BLE_LL_SYNC_SM_FLAG_HCI_TRUNCATED));
         ble_ll_sync_send_truncated_per_adv_rpt(sm, sm->next_report);
         sm->next_report = NULL;
     }
+
+    /* Event ended so we are no longer chaining */
+    sm->flags &= ~BLE_LL_SYNC_SM_FLAG_HCI_TRUNCATED;
 
     sm->sch.sched_cb = ble_ll_sync_event_start_cb;
     sm->sch.cb_arg = sm;
     sm->sch.sched_type = BLE_LL_SCHED_TYPE_SYNC;
 
     do {
-        if (ble_ll_sync_next_event(sm) < 0) {
+        if (ble_ll_sync_next_event(sm, 0) < 0) {
             if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHING) {
                 /* don't allow any retry if this failed */
-                g_ble_ll_sync_pending = 1;
+                sm->sync_pending_cnt = 1;
                 ble_ll_sync_check_failed(sm);
             } else {
                 ble_ll_sync_lost_event(sm);
             }
+
+            /* at this point SM is no longer valid */
+            ble_ll_sync_sm_clear(sm);
             return;
         }
     } while (ble_ll_sched_sync_reschedule(&sm->sch, sm->anchor_point,
@@ -1064,46 +1234,63 @@ ble_ll_sync_event_end(struct ble_npl_event *ev)
                                           sm->window_widening, sm->phy_mode));
 }
 
-static uint16_t
-get_max_skip(uint32_t interval_us, uint32_t timeout_us)
-{
-    BLE_LL_ASSERT(interval_us);
-    BLE_LL_ASSERT(timeout_us);
-
-    if (timeout_us <= interval_us) {
-        return 0;
-    }
-
-    return (timeout_us / interval_us) - 1;
-}
-
 void
-ble_ll_sync_info_event(const uint8_t *addr, uint8_t addr_type, uint8_t sid,
-                       struct ble_mbuf_hdr *rxhdr, const uint8_t *syncinfo)
+ble_ll_sync_info_event(const uint8_t *addr, uint8_t addr_type, int rpa_index,
+                       uint8_t sid, struct ble_mbuf_hdr *rxhdr,
+                       const uint8_t *syncinfo)
 {
-    struct ble_ll_sync_sm *sm;
+    struct ble_ll_sync_sm *sm = NULL;
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+    const uint8_t *rpa = NULL;
+#endif
     uint16_t max_skip;
     uint32_t offset;
     uint32_t usecs;
+    uint16_t itvl;
+    int i;
 
-    if (!g_ble_ll_sync_pending || g_ble_ll_sync_sm_establishing) {
+    /* ignore if not synchronizing */
+    if (!g_ble_ll_sync_create_comp_ev) {
         return;
     }
 
-    sm = ble_ll_sync_find(addr, addr_type, sid);
+    /* get reserved SM */
+    for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
+        if (g_ble_ll_sync_sm[i].flags & BLE_LL_SYNC_SM_FLAG_RESERVED) {
+            sm = &g_ble_ll_sync_sm[i];
+            break;
+        }
+    }
+
+    /* this means we already got sync info event and pending sync */
     if (!sm) {
         return;
     }
 
-    /* don't attempt to synchronize again if already synchronized */
-    if (sm->flags & (BLE_LL_SYNC_SM_FLAG_ESTABLISHING |
-                     BLE_LL_SYNC_SM_FLAG_ESTABLISHED)) {
-            return;
+    /* check if resolved */
+    if (rpa_index >= 0) {
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+        rpa = addr;
+#endif
+        addr = g_ble_ll_resolv_list[rpa_index].rl_identity_addr;
+        addr_type = g_ble_ll_resolv_list[rpa_index].rl_addr_type;
     }
 
-    /* check if this SM is allowed to establish new sync */
-    if (!(sm->flags & BLE_LL_SYNC_SM_FLAG_PENDING)) {
+    /* check peer */
+    if (g_ble_ll_sync_create_params.options & BLE_HCI_LE_PERIODIC_ADV_CREATE_SYNC_OPT_FILTER) {
+        if (ble_ll_sync_on_list(addr, addr_type, sid) < 0) {
             return;
+        }
+
+        /* set addr and sid in sm */
+        sm->adv_sid = sid;
+        sm->adv_addr_type = addr_type;
+        memcpy(sm->adv_addr, addr, BLE_DEV_ADDR_LEN);
+    } else {
+        if ((sm->adv_sid != sid) || (sm->adv_addr_type != addr_type) ||
+                memcmp(sm->adv_addr, addr, BLE_DEV_ADDR_LEN)) {
+            return;
+        }
     }
 
     /* Sync Packet Offset (13 bits), Offset Units (1 bit), RFU (2 bits) */
@@ -1114,6 +1301,24 @@ ble_ll_sync_info_event(const uint8_t *addr, uint8_t addr_type, uint8_t sid,
     if (!offset) {
         return;
     }
+
+    /* Interval (2 bytes), ignore if invalid */
+    itvl = get_le16(&syncinfo[2]);
+    if (itvl < 6) {
+        return;
+    }
+
+    if (rpa_index >= 0) {
+        sm->flags |= BLE_LL_SYNC_SM_FLAG_ADDR_RESOLVED;
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+        memcpy(sm->adv_addr_rpa, rpa, BLE_DEV_ADDR_LEN);
+#endif
+    }
+
+    /* set params from HCI LE Create Periodic Sync */
+    sm->timeout = g_ble_ll_sync_create_params.timeout;
+    sm->skip = g_ble_ll_sync_create_params.max_skip;
+    sm->sync_pending_cnt = BLE_LL_SYNC_ESTABLISH_CNT;
 
     if (syncinfo[1] & 0x20) {
         offset *= 300;
@@ -1126,13 +1331,7 @@ ble_ll_sync_info_event(const uint8_t *addr, uint8_t addr_type, uint8_t sid,
     /* sync end event */
     ble_npl_event_init(&sm->sync_ev_end, ble_ll_sync_event_end, sm);
 
-    /* Interval (2 bytes) */
-    sm->itvl = get_le16(&syncinfo[2]);
-
-    /* ignore if interval is invalid */
-    if (sm->itvl < 6) {
-        return;
-    }
+    sm->itvl = itvl;
 
     /* precalculate interval ticks and usecs */
     usecs = sm->itvl * BLE_LL_SYNC_ITVL_USECS;
@@ -1188,152 +1387,139 @@ ble_ll_sync_info_event(const uint8_t *addr, uint8_t addr_type, uint8_t sid,
     sm->sch.cb_arg = sm;
     sm->sch.sched_type = BLE_LL_SCHED_TYPE_SYNC;
 
-    if (ble_ll_sched_sync(&sm->sch, rxhdr, offset, sm->phy_mode)) {
+    if (ble_ll_sched_sync(&sm->sch, rxhdr->beg_cputime, rxhdr->rem_usecs,
+                          offset, sm->phy_mode)) {
         return;
     }
 
     sm->anchor_point = sm->sch.start_time + g_ble_ll_sched_offset_ticks;
     sm->anchor_point_usecs = sm->sch.remainder;
-
-    /* set anchor point in middle of offset window */
-    if (sm->flags & BLE_LL_SYNC_SM_FLAG_OFFSET_300) {
-        sm->anchor_point_usecs += 150;
-    } else {
-        sm->anchor_point_usecs += 15;
-    }
-
-    while (sm->anchor_point_usecs >= 31) {
-        sm->anchor_point++;
-        sm->anchor_point_usecs -= 31;
-    }
-
     sm->last_anchor_point = sm->anchor_point;
 
-    /* keep sm for which we want to establish new sync */
+#if MYNEWT_VAL(BLE_VERSION) >= 51
+    if (g_ble_ll_sync_create_params.options & BLE_HCI_LE_PERIODIC_ADV_CREATE_SYNC_OPT_DISABLED) {
+        sm->flags |= BLE_LL_SYNC_SM_FLAG_DISABLED;
+    }
+#endif
+
+    sm->flags &= ~BLE_LL_SYNC_SM_FLAG_RESERVED;
     sm->flags |= BLE_LL_SYNC_SM_FLAG_ESTABLISHING;
     sm->flags |= BLE_LL_SYNC_SM_FLAG_SYNC_INFO;
-    g_ble_ll_sync_sm_establishing = sm;
+}
+
+static struct ble_ll_sync_sm *
+ble_ll_sync_reserve(void)
+{
+    struct ble_ll_sync_sm *sm;
+    int i;
+
+    for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
+        sm = &g_ble_ll_sync_sm[i];
+
+        if (!sm->flags) {
+            sm->flags |= BLE_LL_SYNC_SM_FLAG_RESERVED;
+            return sm;
+        }
+    }
+
+    return NULL;
 }
 
 int
-ble_ll_sync_create(uint8_t *cmdbuf)
+ble_ll_sync_create(const uint8_t *cmdbuf, uint8_t len)
 {
+    const struct ble_hci_le_periodic_adv_create_sync_cp *cmd = (const void *) cmdbuf;
     struct ble_ll_sync_sm *sm;
-    uint8_t filter_policy;
-    uint8_t addr_type;
     uint16_t timeout;
-    uint8_t *addr;
-    uint16_t skip;
-    uint8_t sid;
     os_sr_t sr;
-    int cnt;
-    int i;
 
-    if (g_ble_ll_sync_pending) {
+    if (g_ble_ll_sync_create_comp_ev) {
         return BLE_ERR_CMD_DISALLOWED;
     }
 
-    filter_policy = cmdbuf[0];
-    if (filter_policy > 0x01) {
+    if (len != sizeof(*cmd)) {
         return BLE_ERR_INV_HCI_CMD_PARMS;
     }
 
-    skip = get_le16(cmdbuf + 9);
-    if (skip > 0x01f3) {
+#if MYNEWT_VAL(BLE_VERSION) >= 51
+    if (cmd->options > BLE_HCI_LE_PERIODIC_ADV_CREATE_SYNC_OPT_DISABLED) {
+#else
+    if (cmd->options > BLE_HCI_LE_PERIODIC_ADV_CREATE_SYNC_OPT_FILTER) {
+#endif
         return BLE_ERR_INV_HCI_CMD_PARMS;
     }
 
-    timeout = get_le16(cmdbuf + 11);
-    if (timeout < 0x000a && timeout > 0x4000) {
+    if (cmd->skip > 0x01f3) {
         return BLE_ERR_INV_HCI_CMD_PARMS;
     }
 
-    /* check if list is sane */
-    if (filter_policy) {
-        cnt = 0;
+    timeout = le16toh(cmd->sync_timeout);
+    if (timeout < 0x000a || timeout > 0x4000) {
+        return BLE_ERR_INV_HCI_CMD_PARMS;
+    }
 
-        OS_ENTER_CRITICAL(sr);
-
-        for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
-            sm = &g_ble_ll_sync_sm[i];
-
-            if (!(sm->flags & BLE_LL_SYNC_SM_FLAG_ON_LIST)) {
-                continue;
-            }
-
-            /* skip if already synchronized
-             * TODO should we return 0x0B if list is to be used?
-             */
-            if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHED) {
-                continue;
-            }
-
-            /* mark as pending */
-            sm->flags |= BLE_LL_SYNC_SM_FLAG_PENDING;
-            sm->skip = skip;
-            sm->timeout = timeout * 10000; /* 10ms units, store in us */
-            cnt++;
+#if MYNEWT_VAL(BLE_VERSION) >= 51
+    /* we don't support any CTE yet */
+    if (cmd->sync_cte_type) {
+        if (cmd->sync_cte_type > 4) {
+           return BLE_ERR_INV_HCI_CMD_PARMS;
         }
 
-        OS_EXIT_CRITICAL(sr);
+        return BLE_ERR_UNSUPPORTED;
+    }
+#endif
 
-        /* if nothing on list return error
-         * TODO is this valid behavior?
-         */
-        if (!cnt) {
+    if (cmd->options & BLE_HCI_LE_PERIODIC_ADV_CREATE_SYNC_OPT_FILTER) {
+        if (ble_ll_sync_list_empty()) {
             return BLE_ERR_CMD_DISALLOWED;
         }
     } else {
-        sid = cmdbuf[1];
-        if (sid > 0x0f) {
+        if (cmd->sid > 0x0f) {
             return BLE_ERR_INV_HCI_CMD_PARMS;
         }
 
-        addr_type = cmdbuf[2];
-        if (addr_type > BLE_HCI_ADV_PEER_ADDR_MAX) {
+        if (cmd->peer_addr_type > BLE_HCI_ADV_PEER_ADDR_MAX) {
             return BLE_ERR_INV_HCI_CMD_PARMS;
-        }
-
-        addr = &cmdbuf[3];
-
-        sm = ble_ll_sync_get(addr, addr_type, sid);
-        if (!sm) {
-            return BLE_ERR_MEM_CAPACITY;
         }
 
         OS_ENTER_CRITICAL(sr);
+        sm = ble_ll_sync_find(cmd->peer_addr, cmd->peer_addr_type, cmd->sid);
+        OS_EXIT_CRITICAL(sr);
 
-        /* if we already have link established return error as per spec */
-        if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHED) {
-            OS_EXIT_CRITICAL(sr);
+        if (sm) {
             return BLE_ERR_ACL_CONN_EXISTS;
         }
-
-        /* mark as pending */
-        sm->flags |= BLE_LL_SYNC_SM_FLAG_PENDING;
-        sm->timeout = timeout * 10000; /* 10ms units, store in us */
-        sm->skip = skip;
-
-        OS_EXIT_CRITICAL(sr);
     }
 
-    g_ble_ll_sync_comp_ev = ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_EVT_HI);
-    if (!g_ble_ll_sync_comp_ev) {
-        OS_ENTER_CRITICAL(sr);
-
-        for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
-            g_ble_ll_sync_sm[i].flags &= ~BLE_LL_SYNC_SM_FLAG_PENDING;
-            sm->timeout = 0;
-            sm->skip = 0;
-        }
-
-        OS_EXIT_CRITICAL(sr);
-
+    /* reserve buffer for sync complete event */
+    g_ble_ll_sync_create_comp_ev = ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_EVT_HI);
+    if (!g_ble_ll_sync_create_comp_ev) {
         return BLE_ERR_MEM_CAPACITY;
     }
 
-    g_ble_ll_sync_pending = BLE_LL_SYNC_ESTABLISH_CNT;
+    OS_ENTER_CRITICAL(sr);
 
+    /* reserve 1 SM for created sync */
+    sm = ble_ll_sync_reserve();
+    if (!sm) {
+        ble_hci_trans_buf_free(g_ble_ll_sync_create_comp_ev);
+        g_ble_ll_sync_create_comp_ev = NULL;
+        OS_EXIT_CRITICAL(sr);
+        return BLE_ERR_MEM_CAPACITY;
+    }
+
+    /* if we don't use list, store expected address in reserved SM */
+    if (!(cmd->options & BLE_HCI_LE_PERIODIC_ADV_CREATE_SYNC_OPT_FILTER)) {
+        sm->adv_sid = cmd->sid;
+        sm->adv_addr_type = cmd->peer_addr_type;
+        memcpy(&sm->adv_addr, cmd->peer_addr, BLE_DEV_ADDR_LEN);
+    }
+
+    g_ble_ll_sync_create_params.timeout = timeout * 10000; /* 10ms units, store in us */;
+    g_ble_ll_sync_create_params.max_skip = cmd->skip;
+    g_ble_ll_sync_create_params.options = cmd->options;
+
+    OS_EXIT_CRITICAL(sr);
     return BLE_ERR_SUCCESS;
 }
 
@@ -1350,7 +1536,7 @@ ble_ll_sync_cancel(ble_ll_hci_post_cmd_complete_cb *post_cmd_cb)
     os_sr_t sr;
     int i;
 
-    if (!g_ble_ll_sync_pending) {
+    if (!g_ble_ll_sync_create_comp_ev) {
         return BLE_ERR_CMD_DISALLOWED;
     }
 
@@ -1359,37 +1545,44 @@ ble_ll_sync_cancel(ble_ll_hci_post_cmd_complete_cb *post_cmd_cb)
     for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
         sm = &g_ble_ll_sync_sm[i];
 
-        sm->flags &= ~BLE_LL_SYNC_SM_FLAG_PENDING;
+        /* cancelled before fist sync info packet */
+        if (sm->flags & BLE_LL_SYNC_SM_FLAG_RESERVED) {
+            memset(sm, 0, sizeof(*sm));
+            break;
+        }
 
+        /* cancelled while pending sync */
         if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHING) {
-            sm->flags &= ~BLE_LL_SYNC_SM_FLAG_ESTABLISHING;
-            ble_ll_sched_rmv_elem(&sm->sch);
-            ble_npl_eventq_remove(&g_ble_ll_data.ll_evq, &sm->sync_ev_end);
+            ble_ll_sync_sm_clear(sm);
+            break;
         }
     }
 
     OS_EXIT_CRITICAL(sr);
 
-    g_ble_ll_sync_pending = 0;
-    g_ble_ll_sync_sm_establishing = NULL;
-
+    /* g_ble_ll_sync_create_comp_ev will be cleared by this callback */
     *post_cmd_cb = ble_ll_sync_cancel_complete_event;
 
     return BLE_ERR_SUCCESS;
 }
 
 int
-ble_ll_sync_terminate(uint8_t *cmdbuf)
+ble_ll_sync_terminate(const uint8_t *cmdbuf, uint8_t len)
 {
+    const struct ble_hci_le_periodic_adv_term_sync_cp *cmd = (const void *) cmdbuf;
     struct ble_ll_sync_sm *sm;
     uint16_t handle;
     os_sr_t sr;
 
-    if (g_ble_ll_sync_pending) {
+    if (g_ble_ll_sync_create_comp_ev) {
         return BLE_ERR_CMD_DISALLOWED;
     }
 
-    handle  = get_le16(cmdbuf);
+    if (len != sizeof(*cmd)) {
+        return BLE_ERR_INV_HCI_CMD_PARMS;
+    }
+
+    handle = le16toh(cmd->sync_handle);
     if (handle > 0xeff) {
         return BLE_ERR_INV_HCI_CMD_PARMS;
     }
@@ -1415,86 +1608,72 @@ ble_ll_sync_terminate(uint8_t *cmdbuf)
 }
 
 int
-ble_ll_sync_list_add(uint8_t *cmdbuf)
+ble_ll_sync_list_add(const uint8_t *cmdbuf, uint8_t len)
 {
-    struct ble_ll_sync_sm *sm;
-    uint8_t addr_type;
-    uint8_t *addr;
-    uint8_t sid;
-    os_sr_t sr;
+    const struct ble_hci_le_add_dev_to_periodic_adv_list_cp *cmd = (const void *)cmdbuf;
+    int i;
 
-    if (g_ble_ll_sync_pending) {
+    if (g_ble_ll_sync_create_comp_ev) {
         return BLE_ERR_CMD_DISALLOWED;
     }
 
-    addr_type = cmdbuf[0];
-    if (addr_type > BLE_HCI_ADV_PEER_ADDR_MAX) {
+    if (len != sizeof(*cmd)) {
         return BLE_ERR_INV_HCI_CMD_PARMS;
     }
 
-    addr = &cmdbuf[1];
-
-    sid = cmdbuf[7];
-    if (sid > 0x0f) {
+    if (cmd->peer_addr_type > BLE_HCI_ADV_PEER_ADDR_MAX) {
+        return BLE_ERR_INV_HCI_CMD_PARMS;
+    }
+    if (cmd->sid > 0x0f) {
         return BLE_ERR_INV_HCI_CMD_PARMS;
     }
 
-    OS_ENTER_CRITICAL(sr);
+    i = ble_ll_sync_on_list(cmd->peer_addr, cmd->peer_addr_type, cmd->sid);
+    if (i >= 0) {
+        return BLE_ERR_INV_HCI_CMD_PARMS;
+    }
 
-    sm = ble_ll_sync_get(addr, addr_type, sid);
-    if (!sm) {
-        OS_EXIT_CRITICAL(sr);
+    i = ble_ll_sync_list_get_free();
+    if (i < 0) {
         return BLE_ERR_MEM_CAPACITY;
     }
 
-    sm->flags |= BLE_LL_SYNC_SM_FLAG_ON_LIST;
-
-    OS_EXIT_CRITICAL(sr);
+    g_ble_ll_sync_adv_list[i].adv_sid = cmd->sid;
+    g_ble_ll_sync_adv_list[i].adv_addr_type = cmd->peer_addr_type;
+    memcpy(&g_ble_ll_sync_adv_list[i].adv_addr, cmd->peer_addr, BLE_DEV_ADDR_LEN);
 
     return BLE_ERR_SUCCESS;
 }
 
 int
-ble_ll_sync_list_remove(uint8_t *cmdbuf)
+ble_ll_sync_list_remove(const uint8_t *cmdbuf, uint8_t len)
 {
-    struct ble_ll_sync_sm *sm;
-    uint8_t addr_type;
-    uint8_t *addr;
-    uint8_t sid;
-    os_sr_t sr;
+    const struct ble_hci_le_rem_dev_from_periodic_adv_list_cp *cmd = (const void *)cmdbuf;
+    int i;
 
-    if (g_ble_ll_sync_pending) {
+    if (len != sizeof(*cmd)) {
+        return BLE_ERR_INV_HCI_CMD_PARMS;
+    }
+
+    if (g_ble_ll_sync_create_comp_ev) {
         return BLE_ERR_CMD_DISALLOWED;
     }
 
-    addr_type = cmdbuf[0];
-    if (addr_type > BLE_HCI_ADV_PEER_ADDR_MAX) {
+    if (cmd->peer_addr_type > BLE_HCI_ADV_PEER_ADDR_MAX) {
         return BLE_ERR_INV_HCI_CMD_PARMS;
     }
 
-    addr = &cmdbuf[1];
-
-    sid = cmdbuf[7];
-    if (sid > 0x0f) {
+    if (cmd->sid > 0x0f) {
         return BLE_ERR_INV_HCI_CMD_PARMS;
     }
 
-    OS_ENTER_CRITICAL(sr);
-
-    sm = ble_ll_sync_find(addr, addr_type, sid);
-    if (!sm) {
-        OS_EXIT_CRITICAL(sr);
+    i = ble_ll_sync_on_list(cmd->peer_addr, cmd->peer_addr_type, cmd->sid);
+    if (i < 0) {
         return BLE_ERR_UNK_ADV_INDENT;
     }
 
-    /* if sync is established only mark entry as removed from list */
-    if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHED) {
-        sm->flags &= ~BLE_LL_SYNC_SM_FLAG_ON_LIST;
-    } else {
-        ble_ll_sync_sm_clear(sm);
-    }
-
-    OS_EXIT_CRITICAL(sr);
+    memset(&g_ble_ll_sync_adv_list[i], 0, sizeof(g_ble_ll_sync_adv_list[i]));
+    g_ble_ll_sync_adv_list[i].adv_sid = 0xff;
 
     return BLE_ERR_SUCCESS;
 }
@@ -1502,29 +1681,16 @@ ble_ll_sync_list_remove(uint8_t *cmdbuf)
 int
 ble_ll_sync_list_clear(void)
 {
-    struct ble_ll_sync_sm *sm;
-    os_sr_t sr;
     int i;
 
-    if (g_ble_ll_sync_pending) {
+    if (g_ble_ll_sync_create_comp_ev) {
         return BLE_ERR_CMD_DISALLOWED;
     }
 
-    OS_ENTER_CRITICAL(sr);
-
-    for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
-        sm = &g_ble_ll_sync_sm[i];
-
-        /* if sync is establish only mark entry as removed from list */
-        if (sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHED) {
-            sm->flags &= ~BLE_LL_SYNC_SM_FLAG_ON_LIST;
-            continue;
-        }
-
-        ble_ll_sync_sm_clear(sm);
+    for (i = 0; i < ARRAY_SIZE(g_ble_ll_sync_adv_list); i++) {
+        memset(&g_ble_ll_sync_adv_list[i], 0, sizeof(g_ble_ll_sync_adv_list[i]));
+        g_ble_ll_sync_adv_list[i].adv_sid = 0xff;
     }
-
-    OS_EXIT_CRITICAL(sr);
 
     return BLE_ERR_SUCCESS;
 }
@@ -1532,29 +1698,516 @@ ble_ll_sync_list_clear(void)
 int
 ble_ll_sync_list_size(uint8_t *rspbuf, uint8_t *rsplen)
 {
-    os_sr_t sr;
-    int i;
+    struct ble_hci_le_rd_periodic_adv_list_size_rp *rsp = (void *) rspbuf;
 
-    rspbuf[0] = 0;
+    rsp->list_size = ARRAY_SIZE(g_ble_ll_sync_adv_list);
+
+    *rsplen = sizeof(*rsp);
+    return BLE_ERR_SUCCESS;
+}
+
+#if MYNEWT_VAL(BLE_VERSION) >= 51
+int
+ble_ll_sync_receive_enable(const uint8_t *cmdbuf, uint8_t len)
+{
+    const struct ble_hci_le_periodic_adv_receive_enable_cp *cmd = (const void *)cmdbuf;
+    struct ble_ll_sync_sm *sm;
+    uint16_t handle;
+    os_sr_t sr;
+
+    if (len != sizeof(*cmd)) {
+        return BLE_ERR_INV_HCI_CMD_PARMS;
+    }
+
+    if (cmd->enable > 0x01) {
+        return BLE_ERR_INV_HCI_CMD_PARMS;
+    }
+
+    handle = le16toh(cmd->sync_handle);
+    if (handle > 0xeff) {
+        return BLE_ERR_INV_HCI_CMD_PARMS;
+    }
+
+    if (handle >= BLE_LL_SYNC_CNT) {
+        return BLE_ERR_UNK_ADV_INDENT;
+    }
+
+    sm = &g_ble_ll_sync_sm[handle];
 
     OS_ENTER_CRITICAL(sr);
 
-    for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
-        /* only established syncs 'consume' state machine entry */
-        if (g_ble_ll_sync_sm[i].flags & (BLE_LL_SYNC_SM_FLAG_ESTABLISHING |
-                                         BLE_LL_SYNC_SM_FLAG_ESTABLISHED)) {
-            continue;
-        }
+    if (!(sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHED)) {
+        OS_EXIT_CRITICAL(sr);
+        return BLE_ERR_UNK_ADV_INDENT;
+    }
 
-        rspbuf[0]++;
+    if (cmd->enable) {
+        sm->flags &= ~BLE_LL_SYNC_SM_FLAG_DISABLED;
+    } else {
+        sm->flags |= BLE_LL_SYNC_SM_FLAG_DISABLED;
+    }
+
+    OS_EXIT_CRITICAL(sr);
+    return BLE_ERR_SUCCESS;
+}
+#endif
+
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+static struct ble_ll_sync_sm *
+ble_ll_sync_transfer_get(const uint8_t *addr, uint8_t addr_type, uint8_t sid)
+{
+    struct ble_ll_sync_sm *sm;
+    int i;
+
+    for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
+        sm = &g_ble_ll_sync_sm[i];
+
+        if (!sm->flags) {
+            /* allocate event for transfer received event */
+            sm->transfer_received_ev = ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_EVT_HI);
+            if (!sm->transfer_received_ev) {
+                break;
+            }
+
+            sm->adv_sid = sid;
+            sm->adv_addr_type = addr_type;
+            memcpy(&sm->adv_addr, addr, BLE_DEV_ADDR_LEN);
+
+            sm->flags |= BLE_LL_SYNC_SM_FLAG_ESTABLISHING;
+            return sm;
+        }
+    }
+
+    return NULL;
+}
+
+void
+ble_ll_sync_periodic_ind(struct ble_ll_conn_sm *connsm,
+                         const uint8_t *sync_ind, bool reports_disabled,
+                         uint16_t max_skip, uint32_t sync_timeout)
+{
+    const uint8_t *syncinfo = sync_ind + 2;
+    uint16_t sync_conn_event_count;
+    uint16_t last_pa_event_count;
+    struct ble_ll_sync_sm *sm;
+    uint16_t conn_event_count;
+    uint8_t sync_anchor_usecs;
+    const uint8_t *rpa = NULL;
+    int last_pa_diff;
+    uint32_t sync_anchor;
+    const uint8_t *addr;
+    uint16_t event_cntr;
+    uint32_t itvl_usecs;
+    uint32_t ww_adjust;
+    uint8_t addr_type;
+    uint8_t phy_mode;
+    uint32_t offset;
+    uint32_t future;
+    uint16_t itvl;
+    int rpa_index;
+    uint8_t sid;
+    uint8_t sca;
+    os_sr_t sr;
+
+    phy_mode = ble_ll_ctrl_phy_from_phy_mask(sync_ind[25]);
+    itvl = get_le16(syncinfo + 2);
+    /* ignore if sync params are not valid */
+    if ((phy_mode == 0) || (itvl < 6)) {
+        return;
+    }
+
+    last_pa_event_count = get_le16(sync_ind + 22);
+    event_cntr = get_le16(syncinfo + 16);
+    itvl_usecs = itvl * BLE_LL_SYNC_ITVL_USECS;
+
+    last_pa_diff = abs((int16_t)(event_cntr - last_pa_event_count));
+    /* check if not 5 seconds apart, if so ignore sync transfer */
+    if ((last_pa_diff * itvl_usecs) > 5000000) {
+        return;
+    }
+
+    sid = (sync_ind[24] & 0x0f);
+    addr_type = (sync_ind[24] & 0x10) ? BLE_ADDR_RANDOM : BLE_ADDR_PUBLIC;
+    addr = sync_ind + 26;
+
+    rpa_index = -1;
+
+    /* check if need to resolve */
+    if (ble_ll_is_rpa(addr, addr_type)) {
+        rpa_index = ble_ll_resolv_peer_rpa_any(addr);
+        if (rpa_index >= 0) {
+            rpa = addr;
+            addr = g_ble_ll_resolv_list[rpa_index].rl_identity_addr;
+            addr_type = g_ble_ll_resolv_list[rpa_index].rl_addr_type;
+        }
+    }
+
+    OS_ENTER_CRITICAL(sr);
+    /* check if already synchronized with this peer */
+    sm = ble_ll_sync_find(addr, addr_type, sid);
+    if (sm) {
+        OS_EXIT_CRITICAL(sr);
+        return;
+    }
+
+    /* ignore if no memory for new sync */
+    sm = ble_ll_sync_transfer_get(addr, addr_type, sid);
+    if (!sm) {
+        OS_EXIT_CRITICAL(sr);
+        return;
     }
 
     OS_EXIT_CRITICAL(sr);
 
-    *rsplen = 1;
+    if (rpa_index >= 0) {
+        sm->flags |= BLE_LL_SYNC_SM_FLAG_ADDR_RESOLVED;
+        memcpy(sm->adv_addr_rpa, rpa, BLE_DEV_ADDR_LEN);
+    }
+
+    /* set params from transfer */
+    sm->timeout = os_cputime_usecs_to_ticks(sync_timeout);
+    sm->skip = max_skip;
+    sm->sync_pending_cnt = BLE_LL_SYNC_ESTABLISH_CNT;
+    sm->transfer_id = get_le16(sync_ind); /* first two bytes */
+    sm->transfer_conn = connsm;
+
+    /* Sync Packet Offset (13 bits), Offset Units (1 bit), Offset Adjust (1 bit),
+     * RFU (1 bit)
+     */
+    offset = syncinfo[0];
+    offset |= (uint16_t)(syncinfo[1] & 0x1f) << 8;
+
+    if (syncinfo[1] & 0x20) {
+        if (syncinfo[1] & 0x40) {
+            offset += 0x2000;
+        }
+
+        offset *= 300;
+        sm->flags |= BLE_LL_SYNC_SM_FLAG_OFFSET_300;
+    } else {
+        offset *= 30;
+        sm->flags &= ~BLE_LL_SYNC_SM_FLAG_OFFSET_300;
+    }
+
+    /* sync end event */
+    ble_npl_event_init(&sm->sync_ev_end, ble_ll_sync_event_end, sm);
+
+    sm->itvl = itvl;
+
+    /* precalculate interval ticks and usecs */
+    sm->itvl_ticks = os_cputime_usecs_to_ticks(itvl_usecs);
+    sm->itvl_usecs = (uint8_t)(itvl_usecs -
+                               os_cputime_ticks_to_usecs(sm->itvl_ticks));
+    if (sm->itvl_usecs == 31) {
+        sm->itvl_usecs = 0;
+        sm->itvl_ticks++;
+    }
+
+    /* Channels Mask (37 bits) */
+    sm->chanmap[0] = syncinfo[4];
+    sm->chanmap[1] = syncinfo[5];
+    sm->chanmap[2] = syncinfo[6];
+    sm->chanmap[3] = syncinfo[7];
+    sm->chanmap[4] = syncinfo[8] & 0x1f;
+    sm->num_used_chans = ble_ll_utils_calc_num_used_chans(sm->chanmap);
+
+    /* SCA (3 bits) */
+    sm->sca = syncinfo[8] >> 5;
+
+    /* AA (4 bytes) */
+    sm->access_addr = get_le32(syncinfo + 9);
+    sm->channel_id = ((sm->access_addr & 0xffff0000) >> 16) ^
+                      (sm->access_addr & 0x0000ffff);
+
+    /* CRCInit (3 bytes) */
+    sm->crcinit = syncinfo[13];
+    sm->crcinit |= syncinfo[14] << 8;
+    sm->crcinit |= syncinfo[15] << 16;
+
+    /* Event Counter (2 bytes) */
+    sm->event_cntr = event_cntr;
+
+    /* adjust skip if pass timeout */
+    max_skip = get_max_skip(sm->itvl * BLE_LL_SYNC_ITVL_USECS, sync_timeout);
+    if (sm->skip > max_skip) {
+        sm->skip = max_skip;
+    }
+
+    sm->phy_mode = phy_mode;
+
+    /* Calculate channel index of first event */
+    sm->chan_index = ble_ll_utils_calc_dci_csa2(sm->event_cntr, sm->channel_id,
+                                                sm->num_used_chans, sm->chanmap);
+
+    sm->sch.sched_cb = ble_ll_sync_event_start_cb;
+    sm->sch.cb_arg = sm;
+    sm->sch.sched_type = BLE_LL_SCHED_TYPE_SYNC;
+
+    /* get anchor for specified conn event */
+    conn_event_count = get_le16(sync_ind + 20);
+    ble_ll_conn_get_anchor(connsm, conn_event_count, &sm->anchor_point,
+                           &sm->anchor_point_usecs);
+
+    /* Set last anchor point */
+    sm->last_anchor_point = sm->anchor_point - (last_pa_diff * sm->itvl_ticks);
+
+    /* calculate extra window widening */
+    sync_conn_event_count = get_le16(sync_ind + 32);
+    sca = sync_ind[24] >> 5;
+    ble_ll_conn_get_anchor(connsm, sync_conn_event_count, &sync_anchor,
+                           &sync_anchor_usecs);
+    ww_adjust = ble_ll_utils_calc_window_widening(connsm->anchor_point,
+                                                  sync_anchor, sca);
+
+    /* spin until we get anchor in future */
+    future = os_cputime_get32() + g_ble_ll_sched_offset_ticks;
+    while (CPUTIME_LT(sm->anchor_point, future)) {
+        if (ble_ll_sync_next_event(sm, ww_adjust) < 0) {
+            /* release SM if this failed */
+            ble_ll_sync_transfer_received(sm, BLE_ERR_CONN_ESTABLISHMENT);
+            memset(sm, 0, sizeof(*sm));
+            return;
+        }
+    }
+
+    if (ble_ll_sched_sync(&sm->sch, sm->anchor_point, sm->anchor_point_usecs,
+                          offset, sm->phy_mode)) {
+        /* release SM if this failed */
+        ble_ll_sync_transfer_received(sm, BLE_ERR_CONN_ESTABLISHMENT);
+        memset(sm, 0, sizeof(*sm));
+        return;
+    }
+
+    /* Set new anchor point */
+    sm->anchor_point = sm->sch.start_time + g_ble_ll_sched_offset_ticks;
+    sm->anchor_point_usecs = sm->sch.remainder;
+
+    if (reports_disabled) {
+        sm->flags |= BLE_LL_SYNC_SM_FLAG_DISABLED;
+    }
+}
+
+static void
+ble_ll_sync_put_syncinfo(struct ble_ll_sync_sm *syncsm,
+                         struct ble_ll_conn_sm *connsm, uint8_t *conn_event_cnt,
+                         uint8_t *dptr)
+{
+    uint8_t anchor_usecs;
+    uint16_t conn_cnt;
+    uint32_t offset;
+    uint32_t anchor;
+    uint8_t units;
+
+    anchor = connsm->anchor_point;
+    anchor_usecs = connsm->anchor_point_usecs;
+    conn_cnt = connsm->event_cntr;
+
+    /* get anchor for conn event that is before periodic_adv_event_start_time */
+    while (CPUTIME_GT(anchor, syncsm->anchor_point)) {
+        ble_ll_conn_get_anchor(connsm, --conn_cnt, &anchor, &anchor_usecs);
+    }
+
+    offset = os_cputime_ticks_to_usecs(syncsm->anchor_point - anchor);
+    offset -= anchor_usecs;
+    offset += syncsm->anchor_point_usecs;
+
+    /* connEventCount */
+    put_le16(conn_event_cnt, conn_cnt);
+
+    /* Sync Packet Offset (13 bits), Offset Units (1 bit), Offset Adjust (1 bit),
+     * RFU (1 bit)
+     */
+    if (offset > 245700) {
+        units = 0x20;
+
+        if (offset >= 0x2000) {
+            offset -= 0x2000;
+            units |= 0x40;
+        }
+
+        offset = offset / 300;
+    } else {
+        units = 0x00;
+        offset = offset / 30;
+    }
+
+    dptr[0] = (offset & 0x000000ff);
+    dptr[1] = ((offset >> 8) & 0x0000001f) | units;
+
+    /* Interval (2 bytes) */
+    put_le16(&dptr[2], syncsm->itvl);
+
+    /* Channels Mask (37 bits) */
+    dptr[4] = syncsm->chanmap[0];
+    dptr[5] = syncsm->chanmap[1];
+    dptr[6] = syncsm->chanmap[2];
+    dptr[7] = syncsm->chanmap[3];
+    dptr[8] = syncsm->chanmap[4] & 0x1f;
+
+    /* SCA (3 bits) */
+    dptr[8] |= syncsm->sca << 5;
+
+    /* AA (4 bytes) */
+    put_le32(&dptr[9], syncsm->access_addr);
+
+    /* CRCInit (3 bytes) */
+    dptr[13] = (uint8_t)syncsm->crcinit;
+    dptr[14] = (uint8_t)(syncsm->crcinit >> 8);
+    dptr[15] = (uint8_t)(syncsm->crcinit >> 16);
+
+    /* Event Counter (2 bytes) */
+    put_le16(&dptr[16], syncsm->event_cntr);
+}
+
+static int
+ble_ll_sync_send_sync_ind(struct ble_ll_sync_sm *syncsm,
+                          struct ble_ll_conn_sm *connsm, uint16_t service_data)
+{
+    struct os_mbuf *om;
+    uint8_t *sync_ind;
+
+    om = os_msys_get_pkthdr(BLE_LL_CTRL_MAX_PDU_LEN,
+                            sizeof(struct ble_mbuf_hdr));
+    if (!om) {
+        return BLE_ERR_MEM_CAPACITY;
+    }
+
+    om->om_data[0] = BLE_LL_CTRL_PERIODIC_SYNC_IND;
+
+    sync_ind = om->om_data + 1;
+
+    /* ID (service_data), already in LE order */
+    memcpy(sync_ind, &service_data, sizeof(service_data));
+
+    /* fill in syncinfo */
+    ble_ll_sync_put_syncinfo(syncsm, connsm, sync_ind + 20, sync_ind + 2);
+
+    /* lastPaEventCounter */
+    put_le16(sync_ind + 22, syncsm->event_cntr_last_received);
+
+    /* SID, AType, SCA */
+    sync_ind[24] = syncsm->adv_sid;
+
+    if (syncsm->flags & BLE_LL_SYNC_SM_FLAG_ADDR_RESOLVED) {
+        sync_ind[24] |= 1 << 4;
+    } else {
+        sync_ind[24] |= (syncsm->adv_addr_type == BLE_ADDR_RANDOM) << 4 ;
+    }
+
+    sync_ind[24] |= MYNEWT_VAL(BLE_LL_MASTER_SCA) << 5;
+
+    /* PHY */
+    sync_ind[25] = (0x01 << (ble_ll_sync_phy_mode_to_hci(syncsm->phy_mode) - 1));
+
+    /* AdvA */
+    if (syncsm->flags & BLE_LL_SYNC_SM_FLAG_ADDR_RESOLVED) {
+        memcpy(sync_ind + 26, syncsm->adv_addr_rpa, BLE_DEV_ADDR_LEN);
+    } else {
+        memcpy(sync_ind + 26, syncsm->adv_addr, BLE_DEV_ADDR_LEN);
+    }
+
+    /* syncConnEventCount */
+    put_le16(sync_ind + 32, connsm->event_cntr);
+
+    ble_ll_conn_enqueue_pkt(connsm, om, BLE_LL_LLID_CTRL,
+                            BLE_LL_CTRL_PERIODIC_SYNC_IND_LEN + 1);
+
     return BLE_ERR_SUCCESS;
 }
 
+int
+ble_ll_sync_transfer(const uint8_t *cmdbuf, uint8_t len,
+                     uint8_t *rspbuf, uint8_t *rsplen)
+{
+    const struct ble_hci_le_periodic_adv_sync_transfer_cp *cmd = (const void *)cmdbuf;
+    struct ble_hci_le_periodic_adv_sync_transfer_rp *rsp = (void *) rspbuf;
+    struct ble_ll_conn_sm *connsm;
+    struct ble_ll_sync_sm *sm;
+    uint16_t handle;
+    os_sr_t sr;
+    int rc;
+
+    if (len != sizeof(*cmd)) {
+        rc = BLE_ERR_INV_HCI_CMD_PARMS;
+        goto done;
+    }
+
+    handle = le16toh(cmd->sync_handle);
+    if (handle > 0xeff) {
+        rc = BLE_ERR_INV_HCI_CMD_PARMS;
+        goto done;
+    }
+
+    if (handle >= BLE_LL_SYNC_CNT) {
+        rc = BLE_ERR_UNK_ADV_INDENT;
+        goto done;
+    }
+
+    sm = &g_ble_ll_sync_sm[handle];
+
+    OS_ENTER_CRITICAL(sr);
+
+    if (!(sm->flags & BLE_LL_SYNC_SM_FLAG_ESTABLISHED)) {
+        rc = BLE_ERR_UNK_ADV_INDENT;
+        OS_EXIT_CRITICAL(sr);
+        goto done;
+    }
+
+    handle = le16toh(cmd->conn_handle);
+    if (handle > 0xeff) {
+        rc = BLE_ERR_INV_HCI_CMD_PARMS;
+        OS_EXIT_CRITICAL(sr);
+        goto done;
+    }
+
+    connsm = ble_ll_conn_find_active_conn(handle);
+    if (!connsm) {
+        rc = BLE_ERR_UNK_CONN_ID;
+        OS_EXIT_CRITICAL(sr);
+        goto done;
+    }
+
+    /* TODO should not need to shift
+     * byte 3 (0 byte is conn_feature) , bit 1
+     *
+     * Allow initiate LL procedure only if remote supports it.
+     */
+    if (!(connsm->remote_features[2] & (BLE_LL_FEAT_SYNC_TRANS_RECV >> (8 * 3)))) {
+        rc = BLE_ERR_UNSUPP_REM_FEATURE;
+        goto done;
+    }
+
+    rc = ble_ll_sync_send_sync_ind(sm, connsm, cmd->service_data);
+
+    OS_EXIT_CRITICAL(sr);
+done:
+    rsp->conn_handle = cmd->conn_handle;
+    *rsplen = sizeof(*rsp);
+    return rc;
+}
+#endif
+
+/*
+ * Called when a sync scan event has been removed from the scheduler
+ * without being run.
+ */
+void
+ble_ll_sync_rmvd_from_sched(struct ble_ll_sync_sm *sm)
+{
+    ble_ll_event_send(&sm->sync_ev_end);
+}
+
+bool
+ble_ll_sync_enabled(void)
+{
+    return g_ble_ll_sync_create_comp_ev != NULL;
+}
+
+/**
+ * Called to reset the sync module. When this function is called the
+ * scheduler has been stopped and the phy has been disabled. The LL should
+ * be in the standby state.
+ */
 void
 ble_ll_sync_reset(void)
 {
@@ -1564,14 +2217,30 @@ ble_ll_sync_reset(void)
         ble_ll_sync_sm_clear(&g_ble_ll_sync_sm[i]);
     }
 
-    g_ble_ll_sync_pending = 0;
+    for (i = 0; i < ARRAY_SIZE(g_ble_ll_sync_adv_list); i++) {
+        memset(&g_ble_ll_sync_adv_list[i], 0, sizeof(g_ble_ll_sync_adv_list[i]));
+        g_ble_ll_sync_adv_list[i].adv_sid = 0xff;
+    }
 
-    g_ble_ll_sync_sm_establishing = NULL;
+    g_ble_ll_sync_create_params.timeout = 0;
+    g_ble_ll_sync_create_params.max_skip = 0;
+    g_ble_ll_sync_create_params.options = 0;
+
     g_ble_ll_sync_sm_current = NULL;
 
-    if (g_ble_ll_sync_comp_ev) {
-        ble_hci_trans_buf_free(g_ble_ll_sync_comp_ev);
-        g_ble_ll_sync_comp_ev = NULL;
+    if (g_ble_ll_sync_create_comp_ev) {
+        ble_hci_trans_buf_free(g_ble_ll_sync_create_comp_ev);
+        g_ble_ll_sync_create_comp_ev = NULL;
+    }
+}
+
+void
+ble_ll_sync_init(void)
+{
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(g_ble_ll_sync_adv_list); i++) {
+        g_ble_ll_sync_adv_list[i].adv_sid = 0xff;
     }
 }
 #endif

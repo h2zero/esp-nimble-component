@@ -254,7 +254,6 @@ static u8_t *recv_cb(u8_t *buf, size_t *off)
 
 	len = sys_le16_to_cpu(cmd->len);
 	if (len > BTP_MTU - sizeof(*cmd)) {
-		SYS_LOG_ERR("BT tester: invalid packet length");
 		*off = 0;
 		return buf;
 	}
@@ -342,6 +341,22 @@ void tester_send(u8_t service, u8_t opcode, u8_t index, u8_t *data,
 			console_printf("[DBG] send %d bytes data: %s\n", len,
 				       bt_hex((char *) data, len));
 		}
+	}
+}
+
+void tester_send_buf(u8_t service, u8_t opcode, u8_t index,
+		     struct os_mbuf *data)
+{
+	struct btp_hdr msg;
+
+	msg.service = service;
+	msg.opcode = opcode;
+	msg.index = index;
+	msg.len = os_mbuf_len(data);
+
+	bttester_pipe_send((u8_t *)&msg, sizeof(msg));
+	if (data && msg.len) {
+		bttester_pipe_send_buf(data);
 	}
 }
 

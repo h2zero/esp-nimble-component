@@ -207,7 +207,7 @@ bleprph_gap_event(struct ble_gap_event *event, void *arg)
         /* The central has updated the connection parameters. */
         MODLOG_DFLT(INFO, "connection updated; status=%d ",
                     event->conn_update.status);
-        rc = ble_gap_conn_find(event->connect.conn_handle, &desc);
+        rc = ble_gap_conn_find(event->conn_update.conn_handle, &desc);
         assert(rc == 0);
         bleprph_print_conn_desc(&desc);
         MODLOG_DFLT(INFO, "\n");
@@ -321,10 +321,6 @@ main(void)
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
     rc = gatt_svr_init();
-    assert(rc == 0);
-
-    /* Set the default device name. */
-    rc = ble_svc_gap_device_name_set("nimble-bleprph");
     assert(rc == 0);
 
 #if MYNEWT_VAL(BLE_SVC_DIS_FIRMWARE_REVISION_READ_PERM) >= 0

@@ -154,8 +154,6 @@ static struct kv_pair cmd_ext_adv_phy_opts[] = {
     { NULL }
 };
 
-static bool adv_instances[BLE_ADV_INSTANCES];
-
 static int
 cmd_advertise_configure(int argc, char **argv)
 {
@@ -172,11 +170,6 @@ cmd_advertise_configure(int argc, char **argv)
     instance = parse_arg_uint8_dflt("instance", 0, &rc);
     if (rc != 0 || instance >= BLE_ADV_INSTANCES) {
         console_printf("invalid instance\n");
-        return rc;
-    }
-
-    if (adv_instances[instance]) {
-        console_printf("instance already configured\n");
         return rc;
     }
 
@@ -320,8 +313,6 @@ cmd_advertise_configure(int argc, char **argv)
     console_printf("Instance %u configured (selected tx power: %d)\n",
                    instance, selected_tx_power);
 
-    adv_instances[instance] = true;
-
     return 0;
 }
 
@@ -340,11 +331,6 @@ cmd_advertise_set_addr(int argc, char **argv)
     instance = parse_arg_uint8_dflt("instance", 0, &rc);
     if (rc != 0 || instance >= BLE_ADV_INSTANCES) {
         console_printf("invalid instance\n");
-        return rc;
-    }
-
-    if (!adv_instances[instance]) {
-        console_printf("instance not configured\n");
         return rc;
     }
 
@@ -382,11 +368,6 @@ cmd_advertise_start(int argc, char **argv)
     instance = parse_arg_uint8_dflt("instance", 0, &rc);
     if (rc != 0 || instance >= BLE_ADV_INSTANCES) {
         console_printf("invalid instance\n");
-        return rc;
-    }
-
-    if (!adv_instances[instance]) {
-        console_printf("instance not configured\n");
         return rc;
     }
 
@@ -434,11 +415,6 @@ cmd_advertise_stop(int argc, char **argv)
         return rc;
     }
 
-    if (!adv_instances[instance]) {
-        console_printf("instance not configured\n");
-        return rc;
-    }
-
     rc = btshell_ext_adv_stop(instance);
     if (rc) {
         console_printf("failed to stop advertising instance\n");
@@ -465,18 +441,11 @@ cmd_advertise_remove(int argc, char **argv)
         return rc;
     }
 
-    if (!adv_instances[instance]) {
-        console_printf("instance not configured\n");
-        return rc;
-    }
-
     rc = ble_gap_ext_adv_remove(instance);
     if (rc) {
         console_printf("failed to remove advertising instance\n");
         return rc;
     }
-
-    adv_instances[instance] = false;
 
     return 0;
 }
@@ -1341,9 +1310,12 @@ cmd_scan(int argc, char **argv)
                               &g_scan_opts);
         break;
     default:
-        rc = -1;
-        console_printf("invalid 'extended' parameter\n");
+        assert(0);
         break;
+    }
+
+    if (rc != 0) {
+        console_printf("error scanning; rc=%d\n", rc);
     }
 
     return rc;
@@ -1573,11 +1545,6 @@ cmd_set_adv_data_or_scan_rsp(int argc, char **argv, bool scan_rsp,
     instance = parse_arg_uint8_dflt("instance", 0, &rc);
     if (rc != 0 || instance >= BLE_ADV_INSTANCES) {
         console_printf("invalid instance\n");
-        return rc;
-    }
-
-    if (!adv_instances[instance]) {
-        console_printf("instance not configured\n");
         return rc;
     }
 #endif
@@ -2526,6 +2493,31 @@ static const struct shell_cmd_help keystore_show_help = {
 
 #if NIMBLE_BLE_SM
 /*****************************************************************************
+ * $show-oob-sc                                                              *
+ *****************************************************************************/
+
+extern struct ble_sm_sc_oob_data oob_data_local;
+extern struct ble_sm_sc_oob_data oob_data_remote;
+
+static int
+cmd_show_oob_sc(int argc, char **argv)
+{
+    console_printf("Local OOB Data: r=");
+    print_bytes(oob_data_local.r, 16);
+    console_printf(" c=");
+    print_bytes(oob_data_local.c, 16);
+    console_printf("\n");
+
+    console_printf("Remote OOB Data: r=");
+    print_bytes(oob_data_remote.r, 16);
+    console_printf(" c=");
+    print_bytes(oob_data_remote.c, 16);
+    console_printf("\n");
+
+    return 0;
+}
+
+/*****************************************************************************
  * $auth-passkey                                                             *
  *****************************************************************************/
 
@@ -2596,9 +2588,29 @@ cmd_auth_passkey(int argc, char **argv)
             }
             break;
 
-       default:
-         console_printf("invalid passkey action action=%d\n", pk.action);
-         return EINVAL;
+        case BLE_SM_IOACT_OOB_SC:
+            rc = parse_arg_byte_stream_exact_length("r", oob_data_remote.r, 16);
+            if (rc != 0 && rc != ENOENT) {
+                console_printf("invalid 'r' parameter\n");
+                return rc;
+            }
+
+            rc = parse_arg_byte_stream_exact_length("c", oob_data_remote.c, 16);
+            if (rc != 0 && rc != ENOENT) {
+                console_printf("invalid 'c' parameter\n");
+                return rc;
+            }
+            pk.oob_sc_data.local = &oob_data_local;
+            if (ble_hs_cfg.sm_oob_data_flag) {
+                pk.oob_sc_data.remote = &oob_data_remote;
+            } else {
+                pk.oob_sc_data.remote = NULL;
+            }
+            break;
+
+        default:
+            console_printf("invalid passkey action action=%d\n", pk.action);
+            return EINVAL;
     }
 
     rc = ble_sm_inject_io(conn_handle, &pk);
@@ -3184,6 +3196,7 @@ static const struct shell_cmd_help phy_read_help = {
     .usage = NULL,
     .params = phy_read_params,
 };
+#endif
 
 /*****************************************************************************
  * $host-enable                                                              *
@@ -3246,7 +3259,6 @@ static const struct shell_cmd_help host_disable_help = {
     .usage = NULL,
     .params = NULL,
 };
-#endif
 
 /*****************************************************************************
  * $gatt-discover                                                            *
@@ -3482,6 +3494,7 @@ static const struct shell_cmd_help l2cap_update_help = {
 
 static const struct shell_param l2cap_create_server_params[] = {
     {"psm", "usage: =<UINT16>"},
+    {"mtu", "usage: =<UINT16> not more than BTSHELL_COC_MTU, default BTSHELL_COC_MTU"},
     {"error", "usage: used for PTS testing:"},
     {"", "0 - always accept"},
     {"", "1 - reject with insufficient authentication"},
@@ -3503,6 +3516,8 @@ static const struct shell_cmd_help l2cap_create_server_help = {
 static const struct shell_param l2cap_connect_params[] = {
     {"conn", "connection handle, usage: =<UINT16>"},
     {"psm", "usage: =<UINT16>"},
+    {"num", "usage: number of connection created in a row: [1-5]"},
+    {"mtu", "usage: =<UINT16> not more than BTSHELL_COC_MTU, default BTSHELL_COC_MTU"},
     {NULL, NULL}
 };
 
@@ -3526,6 +3541,23 @@ static const struct shell_cmd_help l2cap_disconnect_help = {
     .summary = "perform l2cap disconnect procedure",
     .usage = "use gatt-show-coc to get the parameters",
     .params = l2cap_disconnect_params,
+};
+
+/*****************************************************************************
+ * $l2cap-reconfig                                                           *
+ *****************************************************************************/
+
+static const struct shell_param l2cap_reconfig_params[] = {
+    {"conn", "connection handle, usage: =<UINT16>"},
+    {"mtu", "new mtu, usage: =<UINT16>, default: 0 (no change)"},
+    {"idxs", "list of channel indexes, usage: idxs=1,3"},
+    {NULL, NULL}
+};
+
+static const struct shell_cmd_help l2cap_reconfig_help = {
+    .summary = "perform l2cap reconfigure procedure",
+    .usage = "use gatt-show-coc to get the parameters",
+    .params = l2cap_reconfig_params,
 };
 
 /*****************************************************************************
@@ -3713,7 +3745,7 @@ static const struct shell_cmd_help periodic_stop_help = {
 static int
 cmd_sync_create(int argc, char **argv)
 {
-    struct ble_gap_periodic_sync_params params;
+    struct ble_gap_periodic_sync_params params = { 0 };
     ble_addr_t addr;
     ble_addr_t *addr_param = &addr;
     uint8_t sid;
@@ -3725,7 +3757,7 @@ cmd_sync_create(int argc, char **argv)
     }
 
     if (argc > 1 && strcmp(argv[1], "cancel") == 0) {
-        rc = ble_gap_periodic_adv_create_sync_cancel();
+        rc = ble_gap_periodic_adv_sync_create_cancel();
         if (rc != 0) {
             console_printf("Sync create cancel fail: %d\n", rc);
             return rc;
@@ -3755,13 +3787,19 @@ cmd_sync_create(int argc, char **argv)
         return rc;
     }
 
-    params.sync_timeout = parse_arg_time_dflt("sync_timeout", 10000, 10, &rc);
+    params.sync_timeout = parse_arg_time_dflt("sync_timeout", 10000, 2000, &rc);
     if (rc != 0) {
         console_printf("invalid 'sync_timeout' parameter\n");
         return rc;
     }
 
-    rc = ble_gap_periodic_adv_create_sync(addr_param, sid, &params,
+    params.reports_disabled = parse_arg_bool_dflt("reports_disabled", false, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'reports_disabled' parameter\n");
+        return rc;
+    }
+
+    rc = ble_gap_periodic_adv_sync_create(addr_param, sid, &params,
                                           btshell_gap_event, NULL);
     if (rc) {
         console_printf("Failed to create sync (%d)\n", rc);
@@ -3777,7 +3815,8 @@ static const struct shell_param sync_create_params[] = {
     {"peer_addr", "usage: =[XX:XX:XX:XX:XX:XX]"},
     {"sid", "usage: =[UINT8], default: 0"},
     {"skip", "usage: =[0-0x01F3], default: 0x0000"},
-    {"sync_timeout", "usage: =[0x000A-0x4000], default: 0x000A"},
+    {"sync_timeout", "usage: =[0x000A-0x4000], default: 0x07D0"},
+    {"reports_disabled", "disable reports, usage: =[0-1], default: 0"},
     {NULL, NULL}
 };
 
@@ -3785,6 +3824,241 @@ static const struct shell_cmd_help sync_create_help = {
     .summary = "start/stop periodic sync procedure with specific parameters",
     .usage = NULL,
     .params = sync_create_params,
+};
+#endif
+
+#if MYNEWT_VAL(BLE_PERIODIC_ADV_SYNC_TRANSFER)
+static int
+cmd_sync_transfer(int argc, char **argv)
+{
+    uint16_t service_data;
+    uint16_t conn_handle;
+    uint16_t sync_handle;
+    int rc;
+
+    rc = parse_arg_all(argc - 1, argv + 1);
+    if (rc != 0) {
+        return rc;
+    }
+
+    conn_handle = parse_arg_uint16("conn", &rc);
+    if (rc != 0) {
+        console_printf("invalid 'conn' parameter\n");
+        return rc;
+    }
+
+    sync_handle = parse_arg_uint16_dflt("sync_handle", 0, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'sync_handle' parameter\n");
+        return rc;
+    }
+
+    service_data = parse_arg_uint16_dflt("service_data", 0, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'service_data' parameter\n");
+        return rc;
+    }
+
+    rc = ble_gap_periodic_adv_sync_transfer(sync_handle, conn_handle,
+                                            service_data);
+    if (rc) {
+        console_printf("Failed to transfer sync (%d)\n", rc);
+    }
+
+    return rc;
+}
+
+static int
+cmd_sync_reporting(int argc, char **argv)
+{
+    uint16_t sync_handle;
+    bool enable;
+    int rc;
+
+    rc = parse_arg_all(argc - 1, argv + 1);
+    if (rc != 0) {
+        return rc;
+    }
+
+    sync_handle = parse_arg_uint16_dflt("sync_handle", 0, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'sync_handle' parameter\n");
+        return rc;
+    }
+
+    enable = parse_arg_bool_dflt("enabled", 0, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'enabled' parameter\n");
+        return rc;
+    }
+
+    rc = ble_gap_periodic_adv_sync_reporting(sync_handle, enable);
+    if (rc) {
+        console_printf("Failed to %s reporting (%d)\n",
+                       enable ? "enable" : "disable", rc);
+    }
+
+    return rc;
+}
+
+#if MYNEWT_VAL(SHELL_CMD_HELP)
+static const struct shell_param sync_transfer_params[] = {
+    {"conn", "connection handle, usage: =<UINT16>"},
+    {"sync_handle", "sync handle, usage: =[UINT16], default: 0"},
+    {"service_data", "service data, usage: =[UINT16], default: 0"},
+    {NULL, NULL}
+};
+
+static const struct shell_cmd_help sync_transfer_help = {
+    .summary = "start periodic sync transfer procedure with specific parameters",
+    .usage = NULL,
+    .params = sync_transfer_params,
+};
+
+static const struct shell_param sync_reporting_params[] = {
+    {"sync_handle", "sync handle, usage: =[UINT16], default: 0"},
+    {"enabled", "toggle reporting, usage: =[0-1], default: 0"},
+    {NULL, NULL}
+};
+
+static const struct shell_cmd_help sync_reporting_help = {
+   .summary = "configure periodic advertising sync reporting",
+   .usage = NULL,
+   .params = sync_reporting_params,
+};
+#endif
+
+static int
+cmd_sync_transfer_set_info(int argc, char **argv)
+{
+    uint16_t service_data;
+    uint16_t conn_handle;
+    uint8_t instance;
+    int rc;
+
+    rc = parse_arg_all(argc - 1, argv + 1);
+    if (rc != 0) {
+        return rc;
+    }
+
+    conn_handle = parse_arg_uint16("conn", &rc);
+    if (rc != 0) {
+        console_printf("invalid 'conn' parameter\n");
+        return rc;
+    }
+
+    instance = parse_arg_uint8_dflt("instance", 0, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'instance' parameter\n");
+        return rc;
+    }
+
+    service_data = parse_arg_uint16_dflt("service_data", 0, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'service_data' parameter\n");
+        return rc;
+    }
+
+    rc = ble_gap_periodic_adv_sync_set_info(instance, conn_handle,
+                                                service_data);
+    if (rc) {
+        console_printf("Failed to transfer sync (%d)\n", rc);
+    }
+
+    return rc;
+}
+
+#if MYNEWT_VAL(SHELL_CMD_HELP)
+static const struct shell_param sync_transfer_set_info_params[] = {
+    {"conn", "connection handle, usage: =<UINT16>"},
+    {"instance", "advertising instance, usage: =[UINT8], default: 0"},
+    {"service_data", "service data, usage: =[UINT16], default: 0"},
+    {NULL, NULL}
+};
+
+static const struct shell_cmd_help sync_transfer_set_info_help = {
+    .summary = "start periodic sync transfer procedure with specific parameters",
+    .usage = NULL,
+    .params = sync_transfer_set_info_params,
+};
+#endif
+
+static int
+cmd_sync_transfer_receive(int argc, char **argv)
+{
+    struct ble_gap_periodic_sync_params params = { 0 };
+    uint16_t conn_handle;
+    bool disable;
+    int rc;
+
+    rc = parse_arg_all(argc - 1, argv + 1);
+    if (rc != 0) {
+        return rc;
+    }
+
+    conn_handle = parse_arg_uint16("conn", &rc);
+    if (rc != 0) {
+        console_printf("invalid 'conn' parameter\n");
+        return rc;
+    }
+
+    disable = parse_arg_bool_dflt("disable", false, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'disable' parameter\n");
+        return rc;
+    }
+
+    if (disable) {
+        rc = ble_gap_periodic_adv_sync_receive(conn_handle, NULL, NULL, NULL);
+        if (rc) {
+            console_printf("Failed to disable sync transfer reception (%d)\n", rc);
+        }
+
+        return rc;
+    }
+
+    params.skip = parse_arg_uint16_dflt("skip", 0, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'skip' parameter\n");
+        return rc;
+    }
+
+    params.sync_timeout = parse_arg_time_dflt("sync_timeout", 10000, 10, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'sync_timeout' parameter\n");
+        return rc;
+    }
+
+    params.reports_disabled = parse_arg_bool_dflt("reports_disabled", false, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'reports_disabled' parameter\n");
+        return rc;
+    }
+
+    rc = ble_gap_periodic_adv_sync_receive(conn_handle, &params, btshell_gap_event,
+                                       NULL);
+    if (rc) {
+        console_printf("Failed to enable sync transfer reception (%d)\n", rc);
+    }
+
+    return rc;
+}
+
+#if MYNEWT_VAL(SHELL_CMD_HELP)
+static const struct shell_param sync_transfer_receive_params[] = {
+    {"conn", "connection handle, usage: =<UINT16>"},
+    {"disable", "disable transfer reception, usage: =[0-1], default: 0"},
+    {"skip", "usage: =[0-0x01F3], default: 0x0000"},
+    {"sync_timeout", "usage: =[0x000A-0x4000], default: 0x000A"},
+    {"reports_disabled", "disable reports, usage: =[0-1], default: 0"},
+    {NULL, NULL}
+};
+#endif
+
+static const struct shell_cmd_help sync_transfer_receive_help = {
+    .summary = "start/stop periodic sync reception with specific parameters",
+    .usage = NULL,
+    .params = sync_transfer_receive_params,
 };
 #endif
 
@@ -3805,7 +4079,7 @@ cmd_sync_terminate(int argc, char **argv)
         return rc;
     }
 
-    rc = ble_gap_periodic_adv_terminate_sync(sync_handle);
+    rc = ble_gap_periodic_adv_sync_terminate(sync_handle);
     if (rc) {
         console_printf("Failed to terminate sync (%d)\n", rc);
     }
@@ -4136,6 +4410,13 @@ static const struct shell_cmd btshell_commands[] = {
 #endif
     },
     {
+        .sc_cmd = "l2cap-reconfig",
+        .sc_cmd_func = cmd_l2cap_reconfig,
+#if MYNEWT_VAL(SHELL_CMD_HELP)
+        .help = &l2cap_reconfig_help,
+#endif
+    },
+    {
         .sc_cmd = "l2cap-disconnect",
         .sc_cmd_func = cmd_l2cap_disconnect,
 #if MYNEWT_VAL(SHELL_CMD_HELP)
@@ -4179,6 +4460,13 @@ static const struct shell_cmd btshell_commands[] = {
 #endif
     },
 #if NIMBLE_BLE_SM
+    {
+        .sc_cmd = "show-oob-sc",
+        .sc_cmd_func = cmd_show_oob_sc,
+#if MYNEWT_VAL(SHELL_CMD_HELP)
+        .help = NULL,
+#endif
+    },
     {
         .sc_cmd = "auth-passkey",
         .sc_cmd_func = cmd_auth_passkey,
@@ -4314,6 +4602,36 @@ static const struct shell_cmd btshell_commands[] = {
         .help = &sync_stats_help,
 #endif
     },
+#if MYNEWT_VAL(BLE_PERIODIC_ADV_SYNC_TRANSFER)
+    {
+        .sc_cmd = "sync-transfer",
+        .sc_cmd_func = cmd_sync_transfer,
+#if MYNEWT_VAL(SHELL_CMD_HELP)
+        .help = &sync_transfer_help,
+#endif
+    },
+    {
+        .sc_cmd = "sync-transfer-set-info",
+        .sc_cmd_func = cmd_sync_transfer_set_info,
+#if MYNEWT_VAL(SHELL_CMD_HELP)
+        .help = &sync_transfer_set_info_help,
+#endif
+    },
+    {
+        .sc_cmd = "sync-transfer-receive",
+        .sc_cmd_func = cmd_sync_transfer_receive,
+#if MYNEWT_VAL(SHELL_CMD_HELP)
+        .help = &sync_transfer_receive_help,
+#endif
+    },
+    {
+       .sc_cmd = "sync-reporting",
+       .sc_cmd_func = cmd_sync_reporting,
+#if MYNEWT_VAL(SHELL_CMD_HELP)
+       .help = &sync_reporting_help,
+#endif
+    },
+#endif
 #endif
     { 0 },
 };

@@ -47,11 +47,6 @@ extern "C" {
 #define BLE_LL_SCHED_DIRECT_ADV_MAX_USECS   (502)
 #define BLE_LL_SCHED_MAX_ADV_PDU_USECS      (376)
 
-/* We don't know how big aux packet will be. It depends on adv packet len which
- * can be up to 256. For now we fix it to 128 bytes, but we can optimize it.
- */
-#define BLE_LL_SCHED_AUX_PTR_DFLT_BYTES_NUM  (128)
-
 /*
  * This is the offset from the start of the scheduled item until the actual
  * tx/rx should occur, in ticks.
@@ -74,7 +69,8 @@ extern uint8_t g_ble_ll_sched_offset_ticks;
 #define BLE_LL_SCHED_TYPE_CONN      (3)
 #define BLE_LL_SCHED_TYPE_AUX_SCAN  (4)
 #define BLE_LL_SCHED_TYPE_DTM       (5)
-#define BLE_LL_SCHED_TYPE_SYNC      (6)
+#define BLE_LL_SCHED_TYPE_PERIODIC  (6)
+#define BLE_LL_SCHED_TYPE_SYNC      (7)
 
 /* Return values for schedule callback. */
 #define BLE_LL_SCHED_STATE_RUNNING  (0)
@@ -171,7 +167,7 @@ int ble_ll_sched_sync_reschedule(struct ble_ll_sched_item *sch,
                                  uint8_t anchor_point_usecs,
                                  uint32_t window_widening, int8_t phy_mode);
 int ble_ll_sched_sync(struct ble_ll_sched_item *sch,
-                      struct ble_mbuf_hdr *ble_hdr, uint32_t offset,
+                      uint32_t beg_cputime, uint32_t rem_usecs, uint32_t offset,
                       int8_t phy_mode);
 
 /* Reschedule an advertising event */
@@ -209,12 +205,7 @@ int ble_ll_sched_scan_req_over_aux_ptr(uint32_t chan, uint8_t phy_mode);
 /* Stop the scheduler */
 void ble_ll_sched_stop(void);
 
-#ifdef BLE_XCVR_RFCLK
-/* Check if RF clock needs to be restarted */
-void ble_ll_sched_rfclk_chk_restart(void);
-#endif
-
-#if MYNEWT_VAL(BLE_LL_DIRECT_TEST_MODE)
+#if MYNEWT_VAL(BLE_LL_DTM)
 int ble_ll_sched_dtm(struct ble_ll_sched_item *sch);
 #endif
 

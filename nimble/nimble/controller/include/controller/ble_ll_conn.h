@@ -81,14 +81,20 @@ enum conn_enc_state {
 /*
  * Note that the LTK is the key, the SDK is the plain text, and the
  * session key is the cipher text portion of the encryption block.
+ *
+ * NOTE: we have intentionally violated the specification by making the
+ * transmit and receive packet counters 32-bits as opposed to 39 (as per the
+ * specification). We do this to save code space, ram and calculation time. The
+ * only drawback is that any encrypted connection that sends more than 2^32
+ * packets will suffer a MIC failure and thus be disconnected.
  */
 struct ble_ll_conn_enc_data
 {
     uint8_t enc_state;
     uint8_t tx_encrypted;
     uint16_t enc_div;
-    uint16_t tx_pkt_cntr;
-    uint16_t rx_pkt_cntr;
+    uint32_t tx_pkt_cntr;
+    uint32_t rx_pkt_cntr;
     uint64_t host_rand_num;
     uint8_t iv[8];
     struct ble_encryption_block enc_block;
@@ -127,6 +133,7 @@ union ble_ll_conn_sm_flags {
         uint32_t aux_conn_req: 1;
         uint32_t rxd_features:1;
         uint32_t pending_hci_rd_features:1;
+        uint32_t pending_initiate_dle:1;
     } cfbit;
     uint32_t conn_flags;
 } __attribute__((packed));
@@ -167,7 +174,38 @@ struct ble_ll_conn_phy_data
 #define CONN_CUR_TX_PHY_MASK(csm)   (1 << ((csm)->phy_data.cur_tx_phy - 1))
 #define CONN_CUR_RX_PHY_MASK(csm)   (1 << ((csm)->phy_data.cur_rx_phy - 1))
 
-#define BLE_PHY_TRANSITION_INVALID    (0xFF)
+struct hci_conn_update
+{
+    uint16_t handle;
+    uint16_t conn_itvl_min;
+    uint16_t conn_itvl_max;
+    uint16_t conn_latency;
+    uint16_t supervision_timeout;
+    uint16_t min_ce_len;
+    uint16_t max_ce_len;
+};
+
+struct hci_ext_conn_params
+{
+    uint16_t scan_itvl;
+    uint16_t scan_window;
+    uint16_t conn_itvl_min;
+    uint16_t conn_itvl_max;
+    uint16_t conn_latency;
+    uint16_t supervision_timeout;
+    uint16_t min_ce_len;
+    uint16_t max_ce_len;
+};
+
+struct hci_ext_create_conn
+{
+    uint8_t filter_policy;
+    uint8_t own_addr_type;
+    uint8_t peer_addr_type;
+    uint8_t peer_addr[BLE_DEV_ADDR_LEN];
+    uint8_t init_phy_mask;
+    struct hci_ext_conn_params params[3];
+};
 
 /* Connection state machine */
 struct ble_ll_conn_sm
@@ -200,6 +238,9 @@ struct ble_ll_conn_sm
     uint16_t eff_max_tx_time;
     uint16_t eff_max_rx_time;
     uint8_t max_tx_octets_phy_mode[BLE_PHY_NUM_MODE];
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LE_CODED_PHY)
+    uint16_t host_req_max_tx_time;
+#endif
 
 #if (BLE_LL_BT5_PHY_SUPPORTED == 1)
     struct ble_ll_conn_phy_data phy_data;
@@ -335,6 +376,11 @@ struct ble_ll_conn_sm
     struct hci_ext_create_conn initial_params;
 #endif
 
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PERIODIC_ADV_SYNC_TRANSFER)
+    uint8_t  sync_transfer_mode;
+    uint16_t sync_transfer_skip;
+    uint32_t sync_transfer_sync_timeout;
+#endif
 };
 
 /* Flags */
@@ -367,6 +413,10 @@ struct ble_ll_conn_sm *ble_ll_conn_find_active_conn(uint16_t handle);
 
 /* required for unit testing */
 uint8_t ble_ll_conn_calc_dci(struct ble_ll_conn_sm *conn, uint16_t latency);
+
+/* used to get anchor point for connection event specified */
+void ble_ll_conn_get_anchor(struct ble_ll_conn_sm *connsm, uint16_t conn_event,
+                            uint32_t *anchor, uint8_t *anchor_usecs);
 
 #ifdef __cplusplus
 }

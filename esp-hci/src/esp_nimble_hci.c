@@ -31,6 +31,8 @@
 #include "freertos/semphr.h"
 
 #define NIMBLE_VHCI_TIMEOUT_MS  2000
+#define BLE_HCI_EVENT_HDR_LEN               (2)
+#define BLE_HCI_CMD_HDR_LEN                 (3)
 
 static ble_hci_trans_rx_cmd_fn *ble_hci_rx_cmd_hs_cb;
 static void *ble_hci_rx_cmd_hs_arg;
@@ -210,7 +212,9 @@ void ble_hci_trans_buf_free(uint8_t *buf)
  */
 int ble_hci_trans_set_acl_free_cb(os_mempool_put_fn *cb, void *arg)
 {
-    return BLE_ERR_UNSUPPORTED;
+    ble_hci_acl_pool.mpe_put_cb = cb;
+    ble_hci_acl_pool.mpe_put_arg = arg;
+    return 0;
 }
 
 int ble_hci_trans_reset(void)

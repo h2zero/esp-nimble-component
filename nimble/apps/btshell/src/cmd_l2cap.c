@@ -20,6 +20,7 @@
 #include <inttypes.h>
 #include <errno.h>
 
+#include "syscfg/syscfg.h"
 #include "host/ble_gap.h"
 #include "host/ble_l2cap.h"
 #include "console/console.h"
@@ -95,6 +96,7 @@ int
 cmd_l2cap_create_server(int argc, char **argv)
 {
     uint16_t psm = 0;
+    uint16_t mtu;
     int error;
     int accept_response = 0;
     int rc;
@@ -116,6 +118,12 @@ cmd_l2cap_create_server(int argc, char **argv)
         return rc;
     }
 
+    mtu = parse_arg_uint16_dflt("mtu", 0, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'mtu' parameter\n");
+        return rc;
+    }
+
     switch (error) {
     case 1:
         accept_response = BLE_HS_EAUTHEN;
@@ -128,7 +136,7 @@ cmd_l2cap_create_server(int argc, char **argv)
         break;
     }
 
-    rc = btshell_l2cap_create_srv(psm, accept_response);
+    rc = btshell_l2cap_create_srv(psm, mtu, accept_response);
     if (rc) {
         console_printf("Server create error: 0x%02x\n", rc);
         return rc;
@@ -147,6 +155,8 @@ cmd_l2cap_connect(int argc, char **argv)
 {
     uint16_t conn = 0;
     uint16_t psm = 0;
+    uint16_t mtu;
+    uint8_t num;
     int rc;
 
     rc = parse_arg_all(argc - 1, argv + 1);
@@ -166,7 +176,19 @@ cmd_l2cap_connect(int argc, char **argv)
         return rc;
     }
 
-    return btshell_l2cap_connect(conn, psm);
+    mtu = parse_arg_uint16_dflt("mtu", 0, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'mtu' parameter\n");
+        return rc;
+    }
+
+    num = parse_arg_uint8_dflt("num", 1, &rc);
+    if (rc != 0) {
+        console_printf("invalid 'num' parameter\n");
+        return rc;
+    }
+
+    return btshell_l2cap_connect(conn, psm, mtu, num);
 }
 
 /*****************************************************************************
@@ -260,4 +282,44 @@ cmd_l2cap_show_coc(int argc, char **argv)
     }
 
     return 0;
+}
+
+int
+cmd_l2cap_reconfig(int argc, char **argv)
+{
+#if MYNEWT_VAL(BLE_L2CAP_ENHANCED_COC)
+    uint16_t conn;
+    uint16_t mtu;
+    uint8_t idxs[5];
+    int num;
+    int rc;
+
+    rc = parse_arg_all(argc - 1, argv + 1);
+    if (rc != 0) {
+        return rc;
+    }
+
+    conn = parse_arg_uint16("conn", &rc);
+    if (rc != 0) {
+       console_printf("invalid 'conn' parameter\n");
+       return rc;
+    }
+
+    mtu = parse_arg_uint16_dflt("mtu", 0,&rc);
+    if (rc != 0) {
+       console_printf("invalid 'mtu' parameter\n");
+       return rc;
+    }
+
+    rc = parse_arg_uint8_list_with_separator("idxs", ",", 5, idxs, &num);
+    if (rc != 0) {
+       console_printf("invalid 'idxs' parameter\n");
+       return rc;
+    }
+
+    return btshell_l2cap_reconfig(conn, mtu, num, idxs);
+#else
+    console_printf("To enable this features set BLE_L2CAP_ENHANCED_COC\n");
+    return ENOTSUP;
+#endif
 }

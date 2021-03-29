@@ -190,7 +190,7 @@ struct gap_set_discoverable_rp {
 
 #define GAP_SET_BONDABLE		0x09
 struct gap_set_bondable_cmd {
-	u8_t gap_set_bondable_cmd;
+	u8_t bondable;
 } __packed;
 struct gap_set_bondable_rp {
 	u32_t current_settings;
@@ -274,6 +274,52 @@ struct gap_passkey_confirm_cmd {
 	u8_t match;
 } __packed;
 
+#define GAP_START_DIRECT_ADV		0x15
+struct gap_start_direct_adv_cmd {
+	u8_t address_type;
+	u8_t address[6];
+	u8_t high_duty;
+} __packed;
+
+#define GAP_CONN_PARAM_UPDATE		0x16
+struct gap_conn_param_update_cmd {
+    u8_t address_type;
+    u8_t address[6];
+    u16_t conn_itvl_min;
+    u16_t conn_itvl_max;
+    u16_t conn_latency;
+    u16_t supervision_timeout;
+} __packed;
+
+#define GAP_PAIRING_CONSENT_RSP		0x17
+struct gap_pairing_consent_rsp_cmd {
+    u8_t address_type;
+    u8_t address[6];
+    u8_t consent;
+} __packed;
+
+#define GAP_OOB_LEGACY_SET_DATA		0x18
+struct gap_oob_legacy_set_data_cmd {
+    u8_t oob_data[16];
+} __packed;
+
+#define GAP_OOB_SC_GET_LOCAL_DATA		0x19
+struct gap_oob_sc_get_local_data_rp {
+    u8_t r[16];
+    u8_t c[16];
+} __packed;
+
+#define GAP_OOB_SC_SET_REMOTE_DATA		0x1a
+struct gap_oob_sc_set_remote_data_cmd {
+    u8_t r[16];
+    u8_t c[16];
+} __packed;
+
+#define GAP_SET_MITM		0x1b
+struct gap_set_mitm_cmd {
+    u8_t mitm;
+} __packed;
+
 /* events */
 #define GAP_EV_NEW_SETTINGS		0x80
 struct gap_new_settings_ev {
@@ -298,6 +344,9 @@ struct gap_device_found_ev {
 struct gap_device_connected_ev {
 	u8_t address_type;
 	u8_t address[6];
+	u16_t conn_itvl;
+	u16_t conn_latency;
+	u16_t supervision_timeout;
 } __packed;
 
 #define GAP_EV_DEVICE_DISCONNECTED	0x83
@@ -332,6 +381,28 @@ struct gap_identity_resolved_ev {
 	u8_t address[6];
 	u8_t identity_address_type;
 	u8_t identity_address[6];
+} __packed;
+
+#define GAP_EV_CONN_PARAM_UPDATE	0x88
+struct gap_conn_param_update_ev {
+    u8_t address_type;
+    u8_t address[6];
+    u16_t conn_itvl;
+    u16_t conn_latency;
+    u16_t supervision_timeout;
+} __packed;
+
+#define GAP_EV_SEC_LEVEL_CHANGED	0x89
+struct gap_sec_level_changed_ev {
+    u8_t address_type;
+    u8_t address[6];
+    u8_t level;
+} __packed;
+
+#define GAP_EV_PAIRING_CONSENT_REQ	0x8a
+struct gap_pairing_consent_req_ev {
+    u8_t address_type;
+    u8_t address[6];
 } __packed;
 
 /* GATT Service */
@@ -615,12 +686,21 @@ struct gatt_attr {
 
 #define GATT_GET_ATTRIBUTE_VALUE	0x1d
 struct gatt_get_attribute_value_cmd {
+	u8_t address_type;
+	u8_t address[6];
 	u16_t handle;
 } __packed;
 struct gatt_get_attribute_value_rp {
 	u8_t att_response;
 	u16_t value_length;
 	u8_t value[0];
+} __packed;
+
+#define GATT_CHANGE_DATABASE		0x1e
+struct gatt_change_database {
+    u16_t start_handle;
+    u16_t end_handle;
+    u8_t visibility;
 } __packed;
 
 /* GATT events */
@@ -894,6 +974,8 @@ void tester_init(void);
 void tester_rsp(u8_t service, u8_t opcode, u8_t index, u8_t status);
 void tester_send(u8_t service, u8_t opcode, u8_t index, u8_t *data,
 		 size_t len);
+void tester_send_buf(u8_t service, u8_t opcode, u8_t index,
+		     struct os_mbuf *buf);
 
 u8_t tester_init_gap(void);
 u8_t tester_unregister_gap(void);

@@ -37,6 +37,14 @@
 #include "core_cm0.h"
 #endif
 
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LE_2M_PHY)
+#error LE 2M PHY cannot be enabled on nRF51
+#endif
+
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LE_CODED_PHY)
+#error LE Coded PHY cannot be enabled on nRF51
+#endif
+
 /* XXX: 4) Make sure RF is higher priority interrupt than schedule */
 
 /*
@@ -230,7 +238,7 @@ ble_phy_rxpdu_copy(uint8_t *dptr, struct os_mbuf *rxpdu)
     om = rxpdu;
     dst = om->om_data;
 
-    while (om) {
+    while (true) {
         /*
          * Always copy blocks of length aligned to word size, only last mbuf
          * will have remaining non-word size bytes appended.
@@ -836,17 +844,6 @@ ble_phy_init(void)
 {
     int rc;
 
-#if !defined(BLE_XCVR_RFCLK)
-    /* BLE wants the HFXO on all the time in this case */
-    ble_phy_rfclk_enable();
-
-    /*
-     * XXX: I do not think we need to wait for settling time here since
-     * we will probably not use the radio for longer than the settling time
-     * and it will only degrade performance. Might want to wait here though.
-     */
-#endif
-
     /* Set phy channel to an invalid channel so first set channel works */
     g_ble_phy_data.phy_chan = BLE_PHY_NUM_CHANS;
 
@@ -1380,7 +1377,7 @@ ble_phy_setchan(uint8_t chan, uint32_t access_addr, uint32_t crcinit)
 /**
  * Stop the timer used to count microseconds when using RTC for cputime
  */
-void
+static void
 ble_phy_stop_usec_timer(void)
 {
     NRF_TIMER0->TASKS_STOP = 1;
@@ -1396,7 +1393,7 @@ ble_phy_stop_usec_timer(void)
  * restarted in receive mode. Generally, the disable routine is called to stop
  * the phy.
  */
-void
+static void
 ble_phy_disable_irq_and_ppi(void)
 {
     NRF_RADIO->INTENCLR = NRF_RADIO_IRQ_MASK_ALL;
@@ -1412,6 +1409,7 @@ ble_phy_disable_irq_and_ppi(void)
 void
 ble_phy_restart_rx(void)
 {
+    ble_phy_stop_usec_timer();
     ble_phy_disable_irq_and_ppi();
     ble_phy_rx();
 }

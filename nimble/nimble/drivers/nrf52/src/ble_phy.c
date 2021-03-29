@@ -38,6 +38,12 @@
 #include "core_cm4.h"
 #endif
 
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LE_CODED_PHY)
+#if !MYNEWT_VAL_CHOICE(MCU_TARGET, nRF52840) && !MYNEWT_VAL_CHOICE(MCU_TARGET, nRF52811)
+#error LE Coded PHY can only be enabled on nRF52811 or nRF52840
+#endif
+#endif
+
 /*
  * NOTE: This code uses a couple of PPI channels so care should be taken when
  *       using PPI somewhere else.
@@ -108,8 +114,9 @@ struct ble_phy_obj
     uint8_t phy_encrypted;
     uint8_t phy_privacy;
     uint8_t phy_tx_pyld_len;
-    uint8_t phy_txtorx_phy_mode;
     uint8_t phy_cur_phy_mode;
+    uint8_t phy_tx_phy_mode;
+    uint8_t phy_rx_phy_mode;
     uint8_t phy_bcc_offset;
     int8_t  rx_pwr_compensation;
     uint32_t phy_aar_scratch;
@@ -141,7 +148,12 @@ static const uint8_t g_ble_phy_chan_freq[BLE_PHY_NUM_CHANS] = {
 
 #if (BLE_LL_BT5_PHY_SUPPORTED == 1)
 /* packet start offsets (in usecs) */
-static const uint16_t g_ble_phy_mode_pkt_start_off[BLE_PHY_NUM_MODE] = { 376, 40, 24, 376 };
+static const uint16_t g_ble_phy_mode_pkt_start_off[BLE_PHY_NUM_MODE] = {
+    [BLE_PHY_MODE_1M] = 40,
+    [BLE_PHY_MODE_2M] = 24,
+    [BLE_PHY_MODE_CODED_125KBPS] = 376,
+    [BLE_PHY_MODE_CODED_500KBPS] = 376
+};
 #endif
 
 /* Various radio timings */
@@ -149,13 +161,33 @@ static const uint16_t g_ble_phy_mode_pkt_start_off[BLE_PHY_NUM_MODE] = { 376, 40
 #define BLE_PHY_T_TXENFAST      (XCVR_TX_RADIO_RAMPUP_USECS)
 #define BLE_PHY_T_RXENFAST      (XCVR_RX_RADIO_RAMPUP_USECS)
 /* delay between EVENTS_READY and start of tx */
-static const uint8_t g_ble_phy_t_txdelay[BLE_PHY_NUM_MODE] = { 5, 4, 3, 5 };
+static const uint8_t g_ble_phy_t_txdelay[BLE_PHY_NUM_MODE] = {
+    [BLE_PHY_MODE_1M] = 4,
+    [BLE_PHY_MODE_2M] = 3,
+    [BLE_PHY_MODE_CODED_125KBPS] = 5,
+    [BLE_PHY_MODE_CODED_500KBPS] = 5
+};
 /* delay between EVENTS_END and end of txd packet */
-static const uint8_t g_ble_phy_t_txenddelay[BLE_PHY_NUM_MODE] = { 9, 4, 3, 3 };
+static const uint8_t g_ble_phy_t_txenddelay[BLE_PHY_NUM_MODE] = {
+    [BLE_PHY_MODE_1M] = 4,
+    [BLE_PHY_MODE_2M] = 3,
+    [BLE_PHY_MODE_CODED_125KBPS] = 9,
+    [BLE_PHY_MODE_CODED_500KBPS] = 3
+};
 /* delay between rxd access address (w/ TERM1 for coded) and EVENTS_ADDRESS */
-static const uint8_t g_ble_phy_t_rxaddrdelay[BLE_PHY_NUM_MODE] = { 17, 6, 2, 17 };
+static const uint8_t g_ble_phy_t_rxaddrdelay[BLE_PHY_NUM_MODE] = {
+    [BLE_PHY_MODE_1M] = 6,
+    [BLE_PHY_MODE_2M] = 2,
+    [BLE_PHY_MODE_CODED_125KBPS] = 17,
+    [BLE_PHY_MODE_CODED_500KBPS] = 17
+};
 /* delay between end of rxd packet and EVENTS_END */
-static const uint8_t g_ble_phy_t_rxenddelay[BLE_PHY_NUM_MODE] = { 27, 6, 2, 22 };
+static const uint8_t g_ble_phy_t_rxenddelay[BLE_PHY_NUM_MODE] = {
+    [BLE_PHY_MODE_1M] = 6,
+    [BLE_PHY_MODE_2M] = 2,
+    [BLE_PHY_MODE_CODED_125KBPS] = 27,
+    [BLE_PHY_MODE_CODED_500KBPS] = 22
+};
 
 /* Statistics */
 STATS_SECT_START(ble_phy_stats)
@@ -321,19 +353,18 @@ ble_phy_apply_nrf52840_errata(uint8_t new_phy_mode)
 }
 #endif
 
-void
-ble_phy_mode_set(uint8_t new_phy_mode, uint8_t txtorx_phy_mode)
+static void
+ble_phy_mode_apply(uint8_t phy_mode)
 {
-    if (new_phy_mode == g_ble_phy_data.phy_cur_phy_mode) {
-        g_ble_phy_data.phy_txtorx_phy_mode = txtorx_phy_mode;
+    if (phy_mode == g_ble_phy_data.phy_cur_phy_mode) {
         return;
     }
 
 #if NRF52840_XXAA
-    ble_phy_apply_nrf52840_errata(new_phy_mode);
+    ble_phy_apply_nrf52840_errata(phy_mode);
 #endif
 
-    switch (new_phy_mode) {
+    switch (phy_mode) {
     case BLE_PHY_MODE_1M:
         NRF_RADIO->MODE = RADIO_MODE_MODE_Ble_1Mbit;
         NRF_RADIO->PCNF0 = NRF_PCNF0_1M;
@@ -358,8 +389,14 @@ ble_phy_mode_set(uint8_t new_phy_mode, uint8_t txtorx_phy_mode)
         assert(0);
     }
 
-    g_ble_phy_data.phy_cur_phy_mode = new_phy_mode;
-    g_ble_phy_data.phy_txtorx_phy_mode = txtorx_phy_mode;
+    g_ble_phy_data.phy_cur_phy_mode = phy_mode;
+}
+
+void
+ble_phy_mode_set(uint8_t tx_phy_mode, uint8_t rx_phy_mode)
+{
+    g_ble_phy_data.phy_tx_phy_mode = tx_phy_mode;
+    g_ble_phy_data.phy_rx_phy_mode = rx_phy_mode;
 }
 #endif
 
@@ -420,7 +457,7 @@ ble_phy_rxpdu_copy(uint8_t *dptr, struct os_mbuf *rxpdu)
     om = rxpdu;
     dst = om->om_data;
 
-    while (om) {
+    while (true) {
         /*
          * Always copy blocks of length aligned to word size, only last mbuf
          * will have remaining non-word size bytes appended.
@@ -844,9 +881,6 @@ ble_phy_rx_xcvr_setup(void)
 static void
 ble_phy_tx_end_isr(void)
 {
-#if (BLE_LL_BT5_PHY_SUPPORTED == 1)
-    int phy;
-#endif
     uint8_t tx_phy_mode;
     uint8_t was_encrypted;
     uint8_t transition;
@@ -892,11 +926,7 @@ ble_phy_tx_end_isr(void)
     if (transition == BLE_PHY_TRANSITION_TX_RX) {
 
 #if (BLE_LL_BT5_PHY_SUPPORTED == 1)
-        /* See if a new phy has been specified for tx to rx transition */
-        phy = g_ble_phy_data.phy_txtorx_phy_mode;
-        if (phy != g_ble_phy_data.phy_cur_phy_mode) {
-            ble_phy_mode_set(phy, phy);
-        }
+        ble_phy_mode_apply(g_ble_phy_data.phy_rx_phy_mode);
 #endif
 
         /* Packet pointer needs to be reset. */
@@ -1017,6 +1047,10 @@ ble_phy_rx_end_isr(void)
 #endif
     }
 
+#if (BLE_LL_BT5_PHY_SUPPORTED == 1)
+    ble_phy_mode_apply(g_ble_phy_data.phy_tx_phy_mode);
+#endif
+
     /*
      * Let's schedule TX now and we will just cancel it after processing RXed
      * packet if we don't need TX.
@@ -1038,7 +1072,6 @@ ble_phy_rx_end_isr(void)
     /* Adjust for radio ramp-up */
     tx_time -= BLE_PHY_T_TXENFAST;
     /* Adjust for delay between EVENT_READY and actual TX start time */
-    /* XXX: we may have asymmetric phy so next phy may be different... */
     tx_time -= g_ble_phy_t_txdelay[g_ble_phy_data.phy_cur_phy_mode];
 
     NRF_TIMER0->CC[0] = tx_time;
@@ -1086,6 +1119,9 @@ ble_phy_rx_start_isr(void)
     uint32_t ticks;
     struct ble_mbuf_hdr *ble_hdr;
     uint8_t *dptr;
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PRIVACY)
+    int adva_offset;
+#endif
 
     dptr = (uint8_t *)&g_ble_phy_rx_buf[0];
 
@@ -1156,6 +1192,28 @@ ble_phy_rx_start_isr(void)
         }
     }
 
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PRIVACY)
+    /*
+     * If privacy is enabled and received PDU has TxAdd bit set (i.e. random
+     * address) we try to resolve address using AAR.
+     */
+    if (g_ble_phy_data.phy_privacy && (dptr[3] & 0x40)) {
+        /*
+         * AdvA is located at 4th octet in RX buffer (after S0, length an S1
+         * fields). In case of extended advertising PDU we need to add 2 more
+         * octets for extended header.
+         */
+        adva_offset = (dptr[3] & 0x0f) == 0x07 ? 2 : 0;
+        NRF_AAR->ADDRPTR = (uint32_t)(dptr + 3 + adva_offset);
+
+        /* Trigger AAR after last bit of AdvA is received */
+        NRF_RADIO->EVENTS_BCMATCH = 0;
+        NRF_PPI->CHENSET = PPI_CHEN_CH23_Msk;
+        NRF_RADIO->BCC = (BLE_LL_PDU_HDR_LEN + adva_offset + BLE_DEV_ADDR_LEN) * 8 +
+                         g_ble_phy_data.phy_bcc_offset;
+    }
+#endif
+
     /* Call Link Layer receive start function */
     rc = ble_ll_rx_start(dptr + 3,
                          g_ble_phy_data.phy_chan,
@@ -1164,34 +1222,6 @@ ble_phy_rx_start_isr(void)
         /* Set rx started flag and enable rx end ISR */
         g_ble_phy_data.phy_rx_started = 1;
         NRF_RADIO->INTENSET = RADIO_INTENSET_END_Msk;
-
-#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PRIVACY)
-        /* Must start aar if we need to  */
-        if (g_ble_phy_data.phy_privacy) {
-            NRF_RADIO->EVENTS_BCMATCH = 0;
-            NRF_PPI->CHENSET = PPI_CHEN_CH23_Msk;
-
-            /*
-             * Setup AAR to resolve AdvA and trigger it after complete address
-             * is received, i.e. after PDU header and AdvA is received.
-             *
-             * AdvA starts at 4th octet in receive buffer, after S0, len and S1
-             * fields.
-             *
-             * In case of extended advertising AdvA is located after extended
-             * header (+2 octets).
-             */
-            if (BLE_MBUF_HDR_EXT_ADV(&g_ble_phy_data.rxhdr)) {
-                NRF_AAR->ADDRPTR = (uint32_t)(dptr + 5);
-                NRF_RADIO->BCC = (BLE_DEV_ADDR_LEN + BLE_LL_PDU_HDR_LEN + 2) * 8 +
-                                 g_ble_phy_data.phy_bcc_offset;
-            } else {
-                NRF_AAR->ADDRPTR = (uint32_t)(dptr + 3);
-                NRF_RADIO->BCC = (BLE_DEV_ADDR_LEN + BLE_LL_PDU_HDR_LEN) * 8 +
-                                 g_ble_phy_data.phy_bcc_offset;
-            }
-        }
-#endif
     } else {
         /* Disable PHY */
         ble_phy_disable();
@@ -1362,20 +1392,10 @@ ble_phy_init(void)
 
     /* Default phy to use is 1M */
     g_ble_phy_data.phy_cur_phy_mode = BLE_PHY_MODE_1M;
-    g_ble_phy_data.phy_txtorx_phy_mode = BLE_PHY_MODE_1M;
+    g_ble_phy_data.phy_tx_phy_mode = BLE_PHY_MODE_1M;
+    g_ble_phy_data.phy_rx_phy_mode = BLE_PHY_MODE_1M;
 
     g_ble_phy_data.rx_pwr_compensation = 0;
-
-#if !defined(BLE_XCVR_RFCLK)
-    /* BLE wants the HFXO on all the time in this case */
-    ble_phy_rfclk_enable();
-
-    /*
-     * XXX: I do not think we need to wait for settling time here since
-     * we will probably not use the radio for longer than the settling time
-     * and it will only degrade performance. Might want to wait here though.
-     */
-#endif
 
     /* Set phy channel to an invalid channel so first set channel works */
     g_ble_phy_data.phy_chan = BLE_PHY_NUM_CHANS;
@@ -1599,6 +1619,10 @@ ble_phy_tx_set_start_time(uint32_t cputime, uint8_t rem_usecs)
 
     ble_phy_trace_u32x2(BLE_PHY_TRACE_ID_START_TX, cputime, rem_usecs);
 
+#if (BLE_LL_BT5_PHY_SUPPORTED == 1)
+    ble_phy_mode_apply(g_ble_phy_data.phy_tx_phy_mode);
+#endif
+
     /* XXX: This should not be necessary, but paranoia is good! */
     /* Clear timer0 compare to RXEN since we are transmitting */
     NRF_PPI->CHENCLR = PPI_CHEN_CH21_Msk;
@@ -1635,6 +1659,10 @@ ble_phy_rx_set_start_time(uint32_t cputime, uint8_t rem_usecs)
     int rc = 0;
 
     ble_phy_trace_u32x2(BLE_PHY_TRACE_ID_START_RX, cputime, rem_usecs);
+
+#if (BLE_LL_BT5_PHY_SUPPORTED == 1)
+    ble_phy_mode_apply(g_ble_phy_data.phy_rx_phy_mode);
+#endif
 
     /* XXX: This should not be necessary, but paranoia is good! */
     /* Clear timer0 compare to TXEN since we are transmitting */
@@ -1851,7 +1879,7 @@ int ble_phy_txpower_round(int dbm)
  *
  * @return int 0: success; PHY error code otherwise
  */
-int
+static int
 ble_phy_set_access_addr(uint32_t access_addr)
 {
     NRF_RADIO->BASE0 = (access_addr << 8);
@@ -1924,7 +1952,7 @@ ble_phy_setchan(uint8_t chan, uint32_t access_addr, uint32_t crcinit)
 /**
  * Stop the timer used to count microseconds when using RTC for cputime
  */
-void
+static void
 ble_phy_stop_usec_timer(void)
 {
     NRF_TIMER0->TASKS_STOP = 1;
@@ -1940,7 +1968,7 @@ ble_phy_stop_usec_timer(void)
  * restarted in receive mode. Generally, the disable routine is called to stop
  * the phy.
  */
-void
+static void
 ble_phy_disable_irq_and_ppi(void)
 {
     NRF_RADIO->INTENCLR = NRF_RADIO_IRQ_MASK_ALL;
@@ -1956,6 +1984,7 @@ ble_phy_disable_irq_and_ppi(void)
 void
 ble_phy_restart_rx(void)
 {
+    ble_phy_stop_usec_timer();
     ble_phy_disable_irq_and_ppi();
 
     ble_phy_set_start_now();
@@ -2050,7 +2079,7 @@ ble_phy_resolv_list_disable(void)
 }
 #endif
 
-#if MYNEWT_VAL(BLE_LL_DIRECT_TEST_MODE)
+#if MYNEWT_VAL(BLE_LL_DTM)
 void ble_phy_enable_dtm(void)
 {
     /* When DTM is enabled we need to disable whitening as per

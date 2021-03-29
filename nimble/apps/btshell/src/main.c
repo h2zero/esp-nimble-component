@@ -119,6 +119,9 @@ struct btshell_tx_data_s
 static struct btshell_tx_data_s btshell_tx_data;
 int btshell_full_disc_prev_chr_val;
 
+struct ble_sm_sc_oob_data oob_data_local;
+struct ble_sm_sc_oob_data oob_data_remote;
+
 #define XSTR(s) STR(s)
 #ifndef STR
 #define STR(s) #s
@@ -161,7 +164,7 @@ btshell_print_error(char *msg, uint16_t conn_handle,
 static void
 btshell_print_adv_fields(const struct ble_hs_adv_fields *fields)
 {
-    uint8_t *u8p;
+    const uint8_t *u8p;
     int i;
 
     if (fields->flags != 0) {
@@ -749,9 +752,8 @@ btshell_disc_full_chrs(uint16_t conn_handle)
     }
 
     SLIST_FOREACH(svc, &conn->svcs, next) {
-        if (!svc_is_empty(svc) && SLIST_EMPTY(&svc->chrs)) {
-            rc = btshell_disc_all_chrs(conn_handle, svc->svc.start_handle,
-                                       svc->svc.end_handle);
+        if (!svc->discovered) {
+            rc = btshell_disc_all_chrs_in_svc(conn_handle, svc);
             if (rc != 0) {
                 btshell_full_disc_complete(rc);
             }
@@ -801,6 +803,33 @@ btshell_on_disc_c(uint16_t conn_handle, const struct ble_gatt_error *error,
         break;
 
     case BLE_HS_EDONE:
+        console_printf("characteristic discovery successful\n");
+        if (btshell_full_disc_prev_chr_val > 0) {
+            btshell_disc_full_chrs(conn_handle);
+        }
+        break;
+
+    default:
+        btshell_print_error(NULL, conn_handle, error);
+        break;
+    }
+
+    return 0;
+}
+
+static int
+btshell_on_disc_c_in_s(uint16_t conn_handle, const struct ble_gatt_error *error,
+                       const struct ble_gatt_chr *chr, void *arg)
+{
+    struct btshell_svc *svc = arg;
+
+    switch (error->status) {
+    case 0:
+        btshell_chr_add(conn_handle, svc->svc.start_handle, chr);
+        break;
+
+    case BLE_HS_EDONE:
+        svc->discovered = true;
         console_printf("characteristic discovery successful\n");
         if (btshell_full_disc_prev_chr_val > 0) {
             btshell_disc_full_chrs(conn_handle);
@@ -913,7 +942,7 @@ btshell_on_write_reliable(uint16_t conn_handle,
 }
 
 static void
-btshell_decode_adv_data(uint8_t *adv_data, uint8_t adv_data_len, void *arg)
+btshell_decode_adv_data(const uint8_t *adv_data, uint8_t adv_data_len, void *arg)
 {
     struct btshell_scan_opts *scan_opts = arg;
     struct ble_hs_adv_fields fields;
@@ -1349,12 +1378,12 @@ btshell_gap_event(struct ble_gap_event *event, void *arg)
         return 0;
     case BLE_GAP_EVENT_PERIODIC_SYNC_LOST:
         /* TODO non-NimBLE controllers may not start handles from 0 */
-        if (event->periodic_sync.sync_handle >= MYNEWT_VAL(BLE_MAX_PERIODIC_SYNCS)) {
+        if (event->periodic_sync_lost.sync_handle >= MYNEWT_VAL(BLE_MAX_PERIODIC_SYNCS)) {
             console_printf("Periodic Sync Lost; sync_handle=%d reason=%d\n",
                             event->periodic_sync_lost.sync_handle,
                             event->periodic_sync_lost.reason);
         } else {
-            psync = &g_periodic_data[event->periodic_sync.sync_handle];
+            psync = &g_periodic_data[event->periodic_sync_lost.sync_handle];
 
             console_printf("Periodic Sync Lost; sync_handle=%d reason=%d completed=%u truncated=%u\n",
                            event->periodic_sync_lost.sync_handle,
@@ -1367,6 +1396,35 @@ btshell_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_PERIODIC_REPORT:
         handle_periodic_report(event);
         return 0;
+#if MYNEWT_VAL(BLE_PERIODIC_ADV_SYNC_TRANSFER)
+    case BLE_GAP_EVENT_PERIODIC_TRANSFER:
+        console_printf("Periodic Sync Transfer Received on conn=%u; status=%u,"
+                        " sync_handle=%u sid=%u phy=%u adv_interval=%u ca=%u "
+                        "addr_type=%u addr=",
+                       event->periodic_transfer.conn_handle,
+                       event->periodic_transfer.status,
+                       event->periodic_transfer.sync_handle,
+                       event->periodic_transfer.sid,
+                       event->periodic_transfer.adv_phy,
+                       event->periodic_transfer.per_adv_itvl,
+                       event->periodic_transfer.adv_clk_accuracy,
+                       event->periodic_transfer.adv_addr.type);
+        print_addr(event->periodic_transfer.adv_addr.val);
+        console_printf("\n");
+
+        if (!event->periodic_transfer.status) {
+            /* TODO non-NimBLE controllers may not start handles from 0 */
+            if (event->periodic_transfer.sync_handle >= MYNEWT_VAL(BLE_MAX_PERIODIC_SYNCS)) {
+                console_printf("Unable to prepare cache for sync data\n");
+            } else {
+                psync = &g_periodic_data[event->periodic_transfer.sync_handle];
+                memset(psync, 0, sizeof(*psync));
+                psync->changed = true;
+                psync->established = true;
+            }
+        }
+        return 0;
+#endif
 #endif
     default:
         return 0;
@@ -1452,6 +1510,17 @@ btshell_disc_all_chrs(uint16_t conn_handle, uint16_t start_handle,
     svc_start_handle = start_handle;
     rc = ble_gattc_disc_all_chrs(conn_handle, start_handle, end_handle,
                                  btshell_on_disc_c, (void *)svc_start_handle);
+    return rc;
+}
+
+int
+btshell_disc_all_chrs_in_svc(uint16_t conn_handle, struct btshell_svc *svc)
+{
+    int rc;
+
+    rc = ble_gattc_disc_all_chrs(conn_handle, svc->svc.start_handle,
+                                 svc->svc.end_handle, btshell_on_disc_c_in_s,
+                                 svc);
     return rc;
 }
 
@@ -2036,6 +2105,16 @@ btshell_on_reset(int reason)
 static void
 btshell_on_sync(void)
 {
+#if MYNEWT_VAL(BLE_SM_SC)
+    int rc;
+
+    rc = ble_sm_sc_oob_generate_data(&oob_data_local);
+    if (rc) {
+        console_printf("Error: generating oob data; reason=%d\n", rc);
+        return;
+    }
+#endif
+
     console_printf("Host and controller synced\n");
 }
 
@@ -2130,10 +2209,36 @@ btshell_l2cap_coc_accept(uint16_t conn_handle, uint16_t peer_mtu,
     return ble_l2cap_recv_ready(chan, sdu_rx);
 }
 
+static void
+btshell_l2cap_coc_unstalled(uint16_t conn_handle, struct ble_l2cap_chan *chan)
+{
+    struct btshell_conn *conn;
+    struct btshell_l2cap_coc *coc;
+    struct btshell_l2cap_coc *cur;
+
+    conn = btshell_conn_find(conn_handle);
+    assert(conn != NULL);
+
+    coc = NULL;
+    SLIST_FOREACH(cur, &conn->coc_list, next) {
+        if (cur->chan == chan) {
+            coc = cur;
+            break;
+        }
+    }
+
+    if (!coc) {
+        return;
+    }
+
+    coc->stalled = false;
+}
+
 static int
 btshell_l2cap_event(struct ble_l2cap_event *event, void *arg)
 {
     int accept_response;
+    struct ble_l2cap_chan_info chan_info;
 
     switch(event->type) {
         case BLE_L2CAP_EVENT_COC_CONNECTED:
@@ -2142,22 +2247,23 @@ btshell_l2cap_event(struct ble_l2cap_event *event, void *arg)
                 return 0;
             }
 
-            console_printf("LE COC connected, conn: %d, chan: 0x%08lx, scid: 0x%04x, "
-                           "dcid: 0x%04x, our_mtu: 0x%04x, peer_mtu: 0x%04x\n",
-                           event->connect.conn_handle,
-                           (uint32_t) event->connect.chan,
-                           ble_l2cap_get_scid(event->connect.chan),
-                           ble_l2cap_get_dcid(event->connect.chan),
-                           ble_l2cap_get_our_mtu(event->connect.chan),
-                           ble_l2cap_get_peer_mtu(event->connect.chan));
+            if (ble_l2cap_get_chan_info(event->connect.chan, &chan_info)) {
+                assert(0);
+            }
+
+            console_printf("LE COC connected, conn: %d, chan: %p, psm: 0x%02x, scid: 0x%04x, "
+                           "dcid: 0x%04x, our_mps: %d, our_mtu: %d, peer_mps: %d, peer_mtu: %d\n",
+                           event->connect.conn_handle, event->connect.chan,
+                           chan_info.psm, chan_info.scid, chan_info.dcid,
+                           chan_info.our_l2cap_mtu, chan_info.our_coc_mtu, chan_info.peer_l2cap_mtu, chan_info.peer_coc_mtu);
 
             btshell_l2cap_coc_add(event->connect.conn_handle,
                                   event->connect.chan);
 
             return 0;
         case BLE_L2CAP_EVENT_COC_DISCONNECTED:
-            console_printf("LE CoC disconnected, chan: 0x%08lx\n",
-                           (uint32_t) event->disconnect.chan);
+            console_printf("LE CoC disconnected, chan: %p\n",
+                           event->disconnect.chan);
 
             btshell_l2cap_coc_remove(event->disconnect.conn_handle,
                                      event->disconnect.chan);
@@ -2175,9 +2281,41 @@ btshell_l2cap_event(struct ble_l2cap_event *event, void *arg)
         case BLE_L2CAP_EVENT_COC_DATA_RECEIVED:
             btshell_l2cap_coc_recv(event->receive.chan, event->receive.sdu_rx);
             return 0;
+        case BLE_L2CAP_EVENT_COC_RECONFIG_COMPLETED:
+
+            if (ble_l2cap_get_chan_info(event->reconfigured.chan, &chan_info)) {
+                assert(0);
+            }
+
+            console_printf("LE CoC reconfigure completed status 0x%02x," \
+                            "chan: %p\n",
+                            event->reconfigured.status,
+                            event->reconfigured.chan);
+
+            if (event->reconfigured.status == 0) {
+                console_printf("\t our_mps: %d our_mtu %d\n", chan_info.our_l2cap_mtu, chan_info.our_coc_mtu);
+            }
+            return 0;
+        case BLE_L2CAP_EVENT_COC_PEER_RECONFIGURED:
+
+            if (ble_l2cap_get_chan_info(event->reconfigured.chan, &chan_info)) {
+                assert(0);
+            }
+
+            console_printf("LE CoC peer reconfigured status 0x%02x," \
+                            "chan: %p\n",
+                            event->reconfigured.status,
+                            event->reconfigured.chan);
+
+            if (event->reconfigured.status == 0) {
+                console_printf("\t peer_mps: %d peer_mtu %d\n", chan_info.peer_l2cap_mtu, chan_info.peer_coc_mtu);
+            }
+
+            return 0;
         case BLE_L2CAP_EVENT_COC_TX_UNSTALLED:
             console_printf("L2CAP CoC channel %p unstalled, last sdu sent with err=0x%02x\n",
                             event->tx_unstalled.chan, event->tx_unstalled.status);
+            btshell_l2cap_coc_unstalled(event->tx_unstalled.conn_handle, event->tx_unstalled.chan);
             return 0;
         default:
             return 0;
@@ -2186,7 +2324,7 @@ btshell_l2cap_event(struct ble_l2cap_event *event, void *arg)
 #endif
 
 int
-btshell_l2cap_create_srv(uint16_t psm, int accept_response)
+btshell_l2cap_create_srv(uint16_t psm, uint16_t mtu, int accept_response)
 {
 #if MYNEWT_VAL(BLE_L2CAP_COC_MAX_NUM) == 0
     console_printf("BLE L2CAP LE COC not supported.");
@@ -2194,13 +2332,17 @@ btshell_l2cap_create_srv(uint16_t psm, int accept_response)
     return 0;
 #else
 
-    return ble_l2cap_create_server(psm, BTSHELL_COC_MTU, btshell_l2cap_event,
+    if (mtu == 0 || mtu > BTSHELL_COC_MTU) {
+        mtu = BTSHELL_COC_MTU;
+    }
+
+    return ble_l2cap_create_server(psm, mtu, btshell_l2cap_event,
                                    INT_TO_PTR(accept_response));
 #endif
 }
 
 int
-btshell_l2cap_connect(uint16_t conn_handle, uint16_t psm)
+btshell_l2cap_connect(uint16_t conn_handle, uint16_t psm, uint16_t mtu, uint8_t num)
 {
 #if MYNEWT_VAL(BLE_L2CAP_COC_MAX_NUM) == 0
     console_printf("BLE L2CAP LE COC not supported.");
@@ -2208,13 +2350,27 @@ btshell_l2cap_connect(uint16_t conn_handle, uint16_t psm)
     return 0;
 #else
 
-    struct os_mbuf *sdu_rx;
+    struct os_mbuf *sdu_rx[num];
+    int i;
 
-    sdu_rx = os_mbuf_get_pkthdr(&sdu_os_mbuf_pool, 0);
-    assert(sdu_rx != NULL);
+    if (mtu == 0 || mtu > BTSHELL_COC_MTU) {
+        mtu = BTSHELL_COC_MTU;
+    }
 
-    return ble_l2cap_connect(conn_handle, psm, BTSHELL_COC_MTU, sdu_rx,
-                             btshell_l2cap_event, NULL);
+    console_printf("L2CAP CoC MTU: %d, max available %d\n", mtu, BTSHELL_COC_MTU);
+
+    for (i = 0; i < num; i++) {
+        sdu_rx[i] = os_mbuf_get_pkthdr(&sdu_os_mbuf_pool, 0);
+        assert(sdu_rx != NULL);
+    }
+
+    if (num == 1) {
+        return ble_l2cap_connect(conn_handle, psm, mtu, sdu_rx[0],
+                                     btshell_l2cap_event, NULL);
+    }
+
+    return ble_l2cap_enhanced_connect(conn_handle, psm, mtu,
+                                      num, sdu_rx,btshell_l2cap_event, NULL);
 #endif
 }
 
@@ -2254,6 +2410,44 @@ btshell_l2cap_disconnect(uint16_t conn_handle, uint16_t idx)
 }
 
 int
+btshell_l2cap_reconfig(uint16_t conn_handle, uint16_t mtu,
+                       uint8_t num, uint8_t idxs[])
+{
+    struct btshell_conn *conn;
+    struct btshell_l2cap_coc *coc;
+    struct ble_l2cap_chan * chans[5] = {0};
+    int i, j;
+    int cnt;
+
+    conn = btshell_conn_find(conn_handle);
+    if (conn == NULL) {
+        console_printf("conn=%d does not exist\n", conn_handle);
+        return 0;
+    }
+
+    i = 0;
+    j = 0;
+    cnt = 0;
+    SLIST_FOREACH(coc, &conn->coc_list, next) {
+        for (i = 0; i < num; i++) {
+            if (idxs[i] == j) {
+                chans[cnt] = coc->chan;
+                cnt++;
+                break;
+            }
+        }
+        j++;
+    }
+
+    if (cnt != num) {
+        console_printf("Missing coc? (%d!=%d)\n", num, cnt);
+        return BLE_HS_EINVAL;
+    }
+
+    return ble_l2cap_reconfig(chans, cnt, mtu);
+}
+
+int
 btshell_l2cap_send(uint16_t conn_handle, uint16_t idx, uint16_t bytes)
 {
 #if MYNEWT_VAL(BLE_L2CAP_COC_MAX_NUM) == 0
@@ -2289,6 +2483,11 @@ btshell_l2cap_send(uint16_t conn_handle, uint16_t idx, uint16_t bytes)
         return 0;
     }
 
+    if (coc->stalled) {
+        console_printf("Channel is stalled, wait ...\n");
+        return 0;
+    }
+
     sdu_tx = os_mbuf_get_pkthdr(&sdu_os_mbuf_pool, 0);
     if (sdu_tx == NULL) {
         console_printf("No memory in the test sdu pool\n");
@@ -2318,7 +2517,12 @@ btshell_l2cap_send(uint16_t conn_handle, uint16_t idx, uint16_t bytes)
 
     rc = ble_l2cap_send(coc->chan, sdu_tx);
     if (rc) {
-        console_printf("Could not send data rc=%d\n", rc);
+        if (rc == BLE_HS_ESTALLED) {
+          console_printf("CoC module is stalled with data. Wait for unstalled \n");
+          coc->stalled = true;
+        } else {
+            console_printf("Could not send data rc=%d\n", rc);
+        }
         os_mbuf_free_chain(sdu_tx);
     }
 

@@ -68,11 +68,17 @@ extern "C" {
 
 #define PHY_UNCODED                    (0)
 #define PHY_CODED                      (1)
-#define PHY_NOT_CONFIGURED             (0xFF)
 
 #define BLE_LL_EXT_ADV_MODE_NON_CONN    (0x00)
 #define BLE_LL_EXT_ADV_MODE_CONN        (0x01)
 #define BLE_LL_EXT_ADV_MODE_SCAN        (0x02)
+
+/* All values are stored as ticks */
+struct ble_ll_scan_timing {
+    uint32_t interval;
+    uint32_t window;
+    uint32_t start_time;
+};
 
 struct ble_ll_scan_params
 {
@@ -82,43 +88,57 @@ struct ble_ll_scan_params
     uint8_t configured;
     uint8_t scan_type;
     uint8_t scan_chan;
-    uint16_t scan_itvl;
-    uint16_t scan_window;
-    uint32_t scan_win_start_time;
-    uint32_t next_event_start;
+    struct ble_ll_scan_timing timing;
 };
 
-#define BLE_LL_AUX_CHAIN_BIT            0x01
-#define BLE_LL_AUX_INCOMPLETE_BIT       0x02
-#define BLE_LL_AUX_INCOMPLETE_ERR_BIT   0x04
-#define BLE_LL_AUX_HAS_ADDRA            0x08
-#define BLE_LL_SENT_EVENT_TO_HOST       0x10
-#define BLE_LL_AUX_HAS_DIR_ADDRA        0x20
-#define BLE_LL_AUX_TRUNCATED_SENT       0x40
-#define BLE_LL_AUX_HAS_ADI              0x80
+#define BLE_LL_AUX_HAS_ADVA                     0x01
+#define BLE_LL_AUX_HAS_TARGETA                  0x02
+#define BLE_LL_AUX_HAS_ADI                      0x04
+#define BLE_LL_AUX_IS_MATCHED                   0x08
+#define BLE_LL_AUX_IS_TARGETA_RESOLVED          0x10
 
-#define BLE_LL_AUX_SET_FLAG(aux_data, flag) ((aux_data)->flags |= (flag))
-#define BLE_LL_AUX_CLEAR_FLAG(aux_data, flag) ((aux_data)->flags &= ~(flag))
-#define BLE_LL_AUX_CHECK_FLAG(aux_data, flag) ((aux_data)->flags & (flag))
+#define BLE_LL_AUX_FLAG_HCI_SENT_ANY            0x02
+#define BLE_LL_AUX_FLAG_HCI_SENT_COMPLETED      0x04
+#define BLE_LL_AUX_FLAG_HCI_SENT_TRUNCATED      0x08
+#define BLE_LL_AUX_FLAG_SCAN_COMPLETE           0x10
+#define BLE_LL_AUX_FLAG_SCAN_ERROR              0x20
+#define BLE_LL_AUX_FLAG_AUX_ADV_RECEIVED        0x40
+#define BLE_LL_AUX_FLAG_AUX_CHAIN_RECEIVED      0x80
 
 struct ble_ll_aux_data {
+    uint8_t flags;
+
+    /*
+     * Since aux_data can be accessed from ISR and LL, we have separate copies
+     * of flags to make sure that ISR does not modify flags while LL uses them.
+     * ISR updates 'flags_isr' and LL adds these to 'flags_ll' which it then
+     * uses for further processing allowing to update 'flags_isr' if another
+     * scan for given 'aux_data' is scheduled. Note that flags must not be unset
+     * while aux_data is valid.
+     */
+    uint8_t flags_isr;
+    uint8_t flags_ll;
+
     uint8_t ref_cnt;
     uint8_t chan;
     uint8_t aux_phy;
     uint8_t aux_primary_phy;
     uint8_t mode;
     uint8_t scanning;
-    uint8_t flags;
+#if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PRIVACY)
+    int8_t rpa_index;
+#endif
     uint16_t adi;
     uint32_t offset;
     uint8_t offset_units;
-    uint8_t addr[6];
-    uint8_t addr_type;
-    uint8_t dir_addr[6];
-    uint8_t dir_addr_type;
-    uint8_t evt_type;
+    uint8_t adva[6];
+    uint8_t adva_type;
+    uint8_t targeta[6];
+    uint8_t targeta_type;
+    uint16_t evt_type;
     struct ble_ll_sched_item sch;
-    struct ble_ll_ext_adv_report *evt;
+    struct ble_hci_ev *evt;
+    struct ble_npl_event ev;
 };
 
 struct ble_ll_scan_pdu_data {
@@ -139,7 +159,6 @@ struct ble_ll_scan_sm
     uint8_t scan_rsp_pending;
     uint8_t scan_rsp_cons_fails;
     uint8_t scan_rsp_cons_ok;
-    int8_t scan_rpa_index;
     uint8_t scan_peer_rpa[BLE_DEV_ADDR_LEN];
 #if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_PRIVACY)
     ble_npl_time_t scan_nrpa_timer;
@@ -163,11 +182,12 @@ struct ble_ll_scan_sm
     uint8_t ext_scanning;
 #endif
 
-    uint8_t cur_phy;
-    uint8_t next_phy;
     uint8_t restart_timer_needed;
     struct ble_ll_aux_data *cur_aux_data;
-    struct ble_ll_scan_params phy_data[BLE_LL_SCAN_PHY_NUMBER];
+
+    struct ble_ll_scan_params *scanp;
+    struct ble_ll_scan_params *scanp_next;
+    struct ble_ll_scan_params scanp_phys[BLE_LL_SCAN_PHY_NUMBER];
 };
 
 /* Scan types */
@@ -177,13 +197,14 @@ struct ble_ll_scan_sm
 
 /*---- HCI ----*/
 /* Set scanning parameters */
-int ble_ll_scan_set_scan_params(uint8_t *cmd);
+int ble_ll_scan_set_scan_params(const uint8_t *cmdbuf, uint8_t len);
 
 /* Turn scanning on/off */
-int ble_ll_scan_set_enable(uint8_t *cmd, uint8_t ext);
+int ble_ll_hci_scan_set_enable(const uint8_t *cmdbuf, uint8_t len);
+int ble_ll_hci_ext_scan_set_enable(const uint8_t *cmdbuf, uint8_t len);
 
 #if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_EXT_ADV)
-int ble_ll_set_ext_scan_params(uint8_t *cmd, uint8_t cmdlen);
+int ble_ll_set_ext_scan_params(const uint8_t *cmdbuf, uint8_t len);
 #endif
 
 /*--- Controller Internal API ---*/
@@ -248,8 +269,8 @@ int ble_ll_scan_adv_decode_addr(uint8_t pdu_type, uint8_t *rxbuf,
                                 int *ext_mode);
 
 #if MYNEWT_VAL(BLE_LL_CFG_FEAT_LL_EXT_ADV)
-/* Get aux ptr from ext advertising */
-int ble_ll_scan_get_aux_data(struct ble_mbuf_hdr *ble_hdr, uint8_t *rxbuf);
+int ble_ll_scan_update_aux_data(struct ble_mbuf_hdr *ble_hdr, uint8_t *rxbuf,
+                                bool *adva_present);
 
 /* Initialize the extended scanner when we start initiating */
 struct hci_ext_create_conn;
@@ -257,20 +278,13 @@ int ble_ll_scan_ext_initiator_start(struct hci_ext_create_conn *hcc,
                                     struct ble_ll_scan_sm **sm);
 
 /* Called to parse extended advertising*/
-struct ble_ll_ext_adv_report;
-int ble_ll_scan_parse_ext_hdr(struct os_mbuf *om,
-                              uint8_t *adva, uint8_t adva_type,
-                              uint8_t *inita, uint8_t inita_type,
-                              struct ble_mbuf_hdr *ble_hdr,
-                              struct ble_ll_ext_adv_report *parsed_evt);
-
 struct ble_ll_aux_data *ble_ll_scan_aux_data_ref(struct ble_ll_aux_data *aux_scan);
 void ble_ll_scan_aux_data_unref(struct ble_ll_aux_data *aux_scan);
 void ble_ll_scan_end_adv_evt(struct ble_ll_aux_data *aux_data);
 #endif
 
-/* Called to clean up current aux data */
-void ble_ll_scan_clean_cur_aux_data(void);
+/* Called to halt currently running scan */
+void ble_ll_scan_halt(void);
 
 #ifdef __cplusplus
 }

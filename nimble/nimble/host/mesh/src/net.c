@@ -6,16 +6,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "syscfg/syscfg.h"
+#define MESH_LOG_MODULE BLE_MESH_NET_LOG
+
 #include <string.h>
 #include <errno.h>
 #include <stdbool.h>
 
 #include "os/os_mbuf.h"
 #include "mesh/mesh.h"
-
-#include "syscfg/syscfg.h"
-#define BT_DBG_ENABLED MYNEWT_VAL(BLE_MESH_DEBUG_NET)
-#include "host/ble_hs_log.h"
 
 #include "crypto.h"
 #include "adv.h"
@@ -60,9 +59,7 @@
 #define FRIEND_CRED_COUNT 0
 #endif
 
-#if FRIEND_CRED_COUNT > 0
 static struct friend_cred friend_cred[FRIEND_CRED_COUNT];
-#endif
 
 static u64_t msg_cache[MYNEWT_VAL(BLE_MESH_MSG_CACHE_SIZE)];
 static u16_t msg_cache_next;
@@ -80,6 +77,13 @@ struct bt_mesh_net bt_mesh = {
 			.net_idx = BT_MESH_KEY_UNUSED,
 		}
 	},
+#if MYNEWT_VAL(BLE_MESH_PROVISIONER)
+	.nodes = {
+		[0 ... (CONFIG_BT_MESH_NODE_COUNT - 1)] = {
+			.net_idx = BT_MESH_KEY_UNUSED,
+		}
+	},
+#endif
 };
 
 static u32_t dup_cache[4];
@@ -131,7 +135,8 @@ static bool msg_cache_match(struct bt_mesh_net_rx *rx,
 	}
 
 	/* Add to the cache */
-	msg_cache[msg_cache_next++] = hash;
+	rx->msg_cache_idx = msg_cache_next++;
+	msg_cache[rx->msg_cache_idx] = hash;
 	msg_cache_next %= ARRAY_SIZE(msg_cache);
 
 	return false;
@@ -203,8 +208,6 @@ int bt_mesh_net_keys_create(struct bt_mesh_subnet_keys *keys,
 	return 0;
 }
 
-#if ((MYNEWT_VAL(BLE_MESH_LOW_POWER)) || \
-     (MYNEWT_VAL(BLE_MESH_FRIEND)))
 int friend_cred_set(struct friend_cred *cred, u8_t idx, const u8_t net_key[16])
 {
 	u16_t lpn_addr, frnd_addr;
@@ -390,13 +393,6 @@ int friend_cred_get(struct bt_mesh_subnet *sub, u16_t addr, u8_t *nid,
 
 	return -ENOENT;
 }
-#else
-int friend_cred_get(struct bt_mesh_subnet *sub, u16_t addr, u8_t *nid,
-		    const u8_t **enc, const u8_t **priv)
-{
-	return -ENOENT;
-}
-#endif /* FRIEND || LOW_POWER */
 
 u8_t bt_mesh_net_flags(struct bt_mesh_subnet *sub)
 {
@@ -719,6 +715,14 @@ u32_t bt_mesh_next_seq(void)
 		bt_mesh_store_seq();
 	}
 
+	if (!atomic_test_bit(bt_mesh.flags, BT_MESH_IVU_IN_PROGRESS) &&
+	    bt_mesh.seq > IV_UPDATE_SEQ_LIMIT &&
+	    bt_mesh_subnet_get(BT_MESH_KEY_PRIMARY)) {
+		bt_mesh_beacon_ivu_initiator(true);
+		bt_mesh_net_iv_update(bt_mesh.iv_index + 1, true);
+		bt_mesh_net_sec_update(NULL);
+	}
+
 	return seq;
 }
 
@@ -728,6 +732,7 @@ int bt_mesh_net_resend(struct bt_mesh_subnet *sub, struct os_mbuf *buf,
 {
 	const u8_t *enc, *priv;
 	u32_t seq;
+	u16_t dst;
 	int err;
 
 	BT_DBG("net_idx 0x%04x new_key %u len %u", sub->net_idx, new_key,
@@ -753,6 +758,9 @@ int bt_mesh_net_resend(struct bt_mesh_subnet *sub, struct os_mbuf *buf,
 	buf->om_data[3] = seq >> 8;
 	buf->om_data[4] = seq;
 
+	/* Get destination, in case it's a proxy client */
+	dst = DST(buf->om_data);
+
 	err = bt_mesh_net_encrypt(enc, buf, BT_MESH_NET_IVI_TX, false);
 	if (err) {
 		BT_ERR("encrypt failed (err %d)", err);
@@ -765,13 +773,11 @@ int bt_mesh_net_resend(struct bt_mesh_subnet *sub, struct os_mbuf *buf,
 		return err;
 	}
 
-	bt_mesh_adv_send(buf, cb, cb_data);
-
-	if (!atomic_test_bit(bt_mesh.flags, BT_MESH_IVU_IN_PROGRESS) &&
-	    bt_mesh.seq > IV_UPDATE_SEQ_LIMIT) {
-		bt_mesh_beacon_ivu_initiator(true);
-		bt_mesh_net_iv_update(bt_mesh.iv_index + 1, true);
-		bt_mesh_net_sec_update(NULL);
+	if (IS_ENABLED(CONFIG_BT_MESH_GATT_PROXY) &&
+	    bt_mesh_proxy_relay(buf, dst)) {
+		send_cb_finalize(cb, cb_data);
+	} else {
+		bt_mesh_adv_send(buf, cb, cb_data);
 	}
 
 	return 0;
@@ -886,15 +892,7 @@ int bt_mesh_net_send(struct bt_mesh_net_tx *tx, struct os_mbuf *buf,
 			/* Notify completion if this only went
 			 * through the Mesh Proxy.
 			 */
-			if (cb) {
-				if (cb->start) {
-					cb->start(0, 0, cb_data);
-				}
-
-				if (cb->end) {
-					cb->end(0, cb_data);
-				}
-			}
+			send_cb_finalize(cb, cb_data);
 
 			err = 0;
 			goto done;
@@ -1019,8 +1017,6 @@ static int net_decrypt(struct bt_mesh_subnet *sub, const u8_t *enc,
 	return bt_mesh_net_decrypt(enc, buf, BT_MESH_NET_IVI_RX(rx), false);
 }
 
-#if (MYNEWT_VAL(BLE_MESH_LOW_POWER) || \
-     MYNEWT_VAL(BLE_MESH_FRIEND))
 static int friend_decrypt(struct bt_mesh_subnet *sub, const u8_t *data,
 			  size_t data_len, struct bt_mesh_net_rx *rx,
 			  struct os_mbuf *buf)
@@ -1056,7 +1052,6 @@ static int friend_decrypt(struct bt_mesh_subnet *sub, const u8_t *data,
 
 	return -ENOENT;
 }
-#endif
 
 static bool net_find_and_decrypt(const u8_t *data, size_t data_len,
 				 struct bt_mesh_net_rx *rx,
@@ -1073,15 +1068,14 @@ static bool net_find_and_decrypt(const u8_t *data, size_t data_len,
 			continue;
 		}
 
-#if (MYNEWT_VAL(BLE_MESH_LOW_POWER) || \
-     MYNEWT_VAL(BLE_MESH_FRIEND))
-		if (!friend_decrypt(sub, data, data_len, rx, buf)) {
-			rx->friend_cred = 1;
+		if ((IS_ENABLED(CONFIG_BT_MESH_LOW_POWER) ||
+		     IS_ENABLED(CONFIG_BT_MESH_FRIEND)) &&
+		    !friend_decrypt(sub, data, data_len, rx, buf)) {
+			rx->friend_cred = 1U;
 			rx->ctx.net_idx = sub->net_idx;
 			rx->sub = sub;
 			return true;
 		}
-#endif
 
 		if (NID(data) == sub->keys[0].nid &&
 		    !net_decrypt(sub, sub->keys[0].enc, sub->keys[0].privacy,
@@ -1233,6 +1227,17 @@ done:
 	net_buf_unref(buf);
 }
 
+void bt_mesh_net_header_parse(struct os_mbuf *buf,
+			      struct bt_mesh_net_rx *rx)
+{
+	rx->old_iv = (IVI(buf->om_data) != (bt_mesh.iv_index & 0x01));
+	rx->ctl = CTL(buf->om_data);
+	rx->ctx.recv_ttl = TTL(buf->om_data);
+	rx->seq = SEQ(buf->om_data);
+	rx->ctx.addr = SRC(buf->om_data);
+	rx->ctx.recv_dst = DST(buf->om_data);
+}
+
 int bt_mesh_net_decode(struct os_mbuf *data, enum bt_mesh_net_if net_if,
 		       struct bt_mesh_net_rx *rx, struct os_mbuf *buf)
 {
@@ -1303,7 +1308,7 @@ void bt_mesh_net_recv(struct os_mbuf *data, s8_t rssi,
 		      enum bt_mesh_net_if net_if)
 {
 	struct os_mbuf *buf = NET_BUF_SIMPLE(29);
-	struct bt_mesh_net_rx rx = { .rssi = rssi };
+	struct bt_mesh_net_rx rx = { .ctx.recv_rssi = rssi };
 	struct net_buf_simple_state state;
 
 	BT_DBG("rssi %d net_if %u", rssi, net_if);
@@ -1320,15 +1325,33 @@ void bt_mesh_net_recv(struct os_mbuf *data, s8_t rssi,
 	/* Save the state so the buffer can later be relayed */
 	net_buf_simple_save(buf, &state);
 
-	if ((MYNEWT_VAL(BLE_MESH_GATT_PROXY)) &&
-	    net_if == BT_MESH_NET_IF_PROXY) {
-		bt_mesh_proxy_addr_add(data, rx.ctx.addr);
-	}
-
 	rx.local_match = (bt_mesh_fixed_group_match(rx.ctx.recv_dst) ||
 			  bt_mesh_elem_find(rx.ctx.recv_dst));
 
-	bt_mesh_trans_recv(buf, &rx);
+	if ((MYNEWT_VAL(BLE_MESH_GATT_PROXY)) &&
+	    net_if == BT_MESH_NET_IF_PROXY) {
+		bt_mesh_proxy_addr_add(data, rx.ctx.addr);
+
+		if (bt_mesh_gatt_proxy_get() == BT_MESH_GATT_PROXY_DISABLED &&
+		    !rx.local_match) {
+			BT_INFO("Proxy is disabled; ignoring message");
+			goto done;
+		}
+	}
+
+	/* The transport layer has indicated that it has rejected the message,
+	 * but would like to see it again if it is received in the future.
+	 * This can happen if a message is received when the device is in
+	 * Low Power mode, but the message was not encrypted with the friend
+	 * credentials. Remove it from the message cache so that we accept
+	 * it again in the future.
+	 */
+	if (bt_mesh_trans_recv(buf, &rx) == -EAGAIN) {
+		BT_WARN("Removing rejected message from Network Message Cache");
+		msg_cache[rx.msg_cache_idx] = 0ULL;
+		/* Rewind the next index now that we're not using this entry */
+		msg_cache_next = rx.msg_cache_idx;
+	}
 
 	/* Relay if this was a group/virtual address, or if the destination
 	 * was neither a local element nor an LPN we're Friends for.
