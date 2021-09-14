@@ -23,6 +23,7 @@
 #include <stdio.h>
 
 #include "log/log.h"
+#include "log_common/log_common.h"
 
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
@@ -34,7 +35,7 @@
 
 #ifdef ESP_PLATFORM
 #define MODLOG_ESP_LOCAL(level, ml_msg_, ...) do { \
-    if (LOG_LOCAL_LEVEL >= level) esp_log_write(level, "NimBLE", ml_msg_, ##__VA_ARGS__); \
+    if (MYNEWT_VAL(BLE_HS_LOG_LVL) <= LOG_LOCAL_LEVEL) ESP_LOG_LEVEL_LOCAL(level, "NimBLE", ml_msg_, ##__VA_ARGS__); \
 } while(0)
 
 #define MODLOG_DEBUG(ml_mod_, ml_msg_, ...) \
