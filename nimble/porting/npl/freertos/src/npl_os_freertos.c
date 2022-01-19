@@ -280,7 +280,7 @@ npl_freertos_sem_release(struct ble_npl_sem *sem)
 
     if (in_isr()) {
         ret = xSemaphoreGiveFromISR(sem->handle, &woken);
-        
+
         if( woken == pdTRUE ) {
             portYIELD_FROM_ISR();
         }
@@ -357,7 +357,10 @@ npl_freertos_callout_init(struct ble_npl_callout *co, struct ble_npl_eventq *evq
 
     ESP_ERROR_CHECK(esp_timer_create(&create_args, &co->handle));
 #else
-    memset(co, 0, sizeof(*co));
+    if (co->handle == NULL) {
+        co->handle = xTimerCreate("co", 1, pdFALSE, co, os_callout_timer_cb);
+    }
+
     co->handle = xTimerCreate("co", 1, pdFALSE, co, os_callout_timer_cb);
     co->evq = evq;
     ble_npl_event_init(&co->ev, ev_cb, ev_arg);
@@ -375,6 +378,7 @@ npl_freertos_callout_deinit(struct ble_npl_callout *co)
         xTimerDelete(co->handle, portMAX_DELAY);
     }
 #endif
+    memset(co, 0, sizeof(struct ble_npl_callout));
 }
 
 ble_npl_error_t
