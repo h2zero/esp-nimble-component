@@ -430,7 +430,8 @@ npl_freertos_callout_is_active(struct ble_npl_callout *co)
 #if CONFIG_BT_NIMBLE_USE_ESP_TIMER
     return esp_timer_is_active(co->handle);
 #else
-    return xTimerIsTimerActive(co->handle) == pdTRUE;
+    return xTimerIsTimerActive(co->handle) == pdTRUE &&
+                               xTimerGetExpiryTime(co->handle) > xTaskGetTickCountFromISR();
 #endif
 }
 
