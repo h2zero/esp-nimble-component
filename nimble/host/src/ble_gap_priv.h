@@ -95,7 +95,6 @@ void ble_gap_rx_rd_rem_sup_feat_complete(const struct ble_hci_ev_le_subev_rd_rem
 #if MYNEWT_VAL(BLE_CONN_SUBRATING)
 void ble_gap_rx_subrate_change(const struct ble_hci_ev_le_subev_subrate_change *ev);
 #endif
-
 #if MYNEWT_VAL(BLE_POWER_CONTROL)
 void ble_gap_rx_transmit_power_report(const struct ble_hci_ev_le_subev_transmit_power_report *ev);
 void ble_gap_rx_le_pathloss_threshold(const struct ble_hci_ev_le_subev_path_loss_threshold *ev);

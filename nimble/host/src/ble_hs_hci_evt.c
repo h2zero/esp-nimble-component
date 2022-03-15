@@ -86,8 +86,7 @@ static ble_hs_hci_evt_le_fn ble_hs_hci_evt_le_subrate_change;
 #endif
 
 /* Statistics */
-struct host_hci_stats
-{
+struct host_hci_stats {
     uint32_t events_rxd;
     uint32_t good_acks_rxd;
     uint32_t bad_acks_rxd;

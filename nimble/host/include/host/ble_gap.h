@@ -1024,8 +1024,9 @@ struct ble_gap_event {
 	    uint8_t delta;
 	} transmit_power;
 #endif
+
 #if MYNEWT_VAL(BLE_CONN_SUBRATING)
-	/**
+        /**
          * Represents a subrate change event that indicates connection subrate update procedure
          * has completed and some parameters have changed  Valid for
          * the following event types:
@@ -2264,7 +2265,6 @@ ble_gap_subrate_req(uint16_t conn_handle, uint16_t subrate_min, uint16_t subrate
                         uint16_t max_latency, uint16_t cont_num,
                         uint16_t supervision_timeout);
 #endif
-
 /**
  * Event listener structure
  *
