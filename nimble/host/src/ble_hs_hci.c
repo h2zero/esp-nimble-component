@@ -38,19 +38,21 @@ static uint32_t ble_hs_hci_sup_feat;
 
 static uint8_t ble_hs_hci_version;
 
-#if MYNEWT_VAL(BLE_CONTROLLER)
+#if CONFIG_BT_NIMBLE_LEGACY_VHCI_ENABLE
 #define BLE_HS_HCI_FRAG_DATABUF_SIZE    \
     (BLE_ACL_MAX_PKT_SIZE +             \
      BLE_HCI_DATA_HDR_SZ +              \
      sizeof (struct os_mbuf_pkthdr) +   \
-     sizeof (struct ble_mbuf_hdr) +      \
+     sizeof (struct ble_mbuf_hdr) +     \
      sizeof (struct os_mbuf))
 #else
 #define BLE_HS_HCI_FRAG_DATABUF_SIZE    \
-    (BLE_ACL_MAX_PKT_SIZE +             \
-     BLE_HCI_DATA_HDR_SZ +              \
-     sizeof (struct os_mbuf_pkthdr) +   \
-     sizeof (struct os_mbuf))
+     (BLE_ACL_MAX_PKT_SIZE +            \
+      BLE_HCI_DATA_HDR_SZ +             \
+      BLE_HS_CTRL_DATA_HDR_SZ +         \
+      sizeof (struct os_mbuf_pkthdr) +  \
+      sizeof (struct ble_mbuf_hdr) +    \
+      sizeof (struct os_mbuf))
 #endif
 
 #define BLE_HS_HCI_FRAG_MEMBLOCK_SIZE   \
@@ -426,7 +428,11 @@ ble_hs_hci_frag_alloc(uint16_t frag_size, void *arg)
     om = os_mbuf_get_pkthdr(&ble_hs_hci_frag_mbuf_pool, 0);
 #endif
     if (om != NULL) {
+#if CONFIG_BT_NIMBLE_LEGACY_VHCI_ENABLE
         om->om_data += BLE_HCI_DATA_HDR_SZ;
+#else
+        om->om_data += BLE_HCI_DATA_HDR_SZ + BLE_HS_CTRL_DATA_HDR_SZ;
+#endif
         return om;
     }
 
