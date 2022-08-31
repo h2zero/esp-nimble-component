@@ -57,13 +57,15 @@ ble_hs_hci_cmd_transport(struct ble_hci_cmd *cmd)
 static int
 ble_hs_hci_cmd_send(uint16_t opcode, uint8_t len, const void *cmddata)
 {
+    struct ble_hci_cmd *cmd;
     uint8_t *buf;
     int rc;
 
     cmd = ble_transport_alloc_cmd();
     BLE_HS_DBG_ASSERT(cmd != NULL);
 
-#if !(SOC_ESP_NIMBLE_CONTROLLER)
+    buf = (uint8_t *)cmd;
+#if !(SOC_ESP_NIMBLE_CONTROLLER) && !CONFIG_BT_CONTROLLER_DISABLED
     /* Hack for avoiding memcpy while handling tx pkt to VHCI,
      * keep one byte for type field*/
     buf++;
@@ -80,7 +82,7 @@ ble_hs_hci_cmd_send(uint16_t opcode, uint8_t len, const void *cmddata)
     BLE_HS_LOG(DEBUG, "\n");
 #endif
 
-#if !(SOC_ESP_NIMBLE_CONTROLLER)
+#if !(SOC_ESP_NIMBLE_CONTROLLER) && !CONFIG_BT_CONTROLLER_DISABLED
     buf--;
 #endif
 
