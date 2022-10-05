@@ -139,6 +139,7 @@ struct hci_conn_update;
 #define BLE_GAP_EVENT_PATHLOSS_THRESHOLD    25
 #define BLE_GAP_EVENT_TRANSMIT_POWER        26
 #define BLE_GAP_EVENT_SUBRATE_CHANGE        27
+#define BLE_GAP_EVENT_VS_HCI                28
 
 /*** Reason codes for the subscribe GAP event. */
 
@@ -1052,6 +1053,19 @@ struct ble_gap_event {
             /** Supervision Timeout */
             uint16_t supervision_tmo;
         } subrate_change;
+#endif
+
+#if MYNEWT_VAL(BLE_HCI_VS)
+        /**
+         * Represents a received vendor-specific HCI event
+         *
+         * Valid for the following event types:
+         *     o BLE_GAP_EVENT_VS_HCI
+         */
+        struct {
+            const void *ev;
+            uint8_t length;
+        } vs_hci;
 #endif
     };
 };
