@@ -28,6 +28,14 @@
 #include "ble_gap_priv.h"
 #include "ble_hs_resolv_priv.h"
 
+#ifndef min
+#define min(a, b) ((a)<(b)?(a):(b))
+#endif
+
+#ifndef max
+#define max(a, b) ((a)>(b)?(a):(b))
+#endif
+
 #if MYNEWT
 #include "bsp/bsp.h"
 #else
