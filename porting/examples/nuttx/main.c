@@ -72,7 +72,12 @@ int main(int argc, char *argv[])
     }
 
     printf("port init\n");
-    nimble_port_init();
+
+    ret = nimble_port_init();
+    if (ret != 0) {
+        printf(" Failed to init nimble %d \n", ret);
+	return ret;
+    }
 
     printf("hci init\n");
     ble_hci_sock_init();
