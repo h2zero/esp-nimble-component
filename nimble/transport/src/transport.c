@@ -58,6 +58,7 @@
                                        BLE_MBUF_MEMBLOCK_OVERHEAD +         \
                                        BLE_HCI_DATA_HDR_SZ, OS_ALIGNMENT))
 
+#if !SOC_ESP_NIMBLE_CONTROLLER
 static uint8_t pool_cmd_buf[ OS_MEMPOOL_BYTES(POOL_CMD_COUNT, POOL_CMD_SIZE) ];
 static struct os_mempool pool_cmd;
 
@@ -162,6 +163,7 @@ ble_transport_acl_put(struct os_mempool_ext *mpe, void *data, void *arg)
     do_put = true;
     from_ll = (pkthdr->omp_flags & OMP_FLAG_FROM_MASK) == OMP_FLAG_FROM_LL;
     err = 0;
+    from_ll = true;
 
     if (from_ll && transport_put_acl_from_ll_cb) {
         err = transport_put_acl_from_ll_cb(mpe, data, arg);
@@ -211,6 +213,22 @@ ble_transport_init(void)
     pool_acl.mpe_put_cb = ble_transport_acl_put;
 }
 
+void
+ble_transport_deinit(void)
+{
+    int rc = 0;
+    rc = os_mempool_ext_clear(&pool_acl);
+    SYSINIT_PANIC_ASSERT(rc == 0);
+
+    rc = os_mempool_clear(&pool_evt_lo);
+    SYSINIT_PANIC_ASSERT(rc == 0);
+
+    rc = os_mempool_clear(&pool_evt);
+    SYSINIT_PANIC_ASSERT(rc == 0);
+
+    rc = os_mempool_clear(&pool_cmd);
+    SYSINIT_PANIC_ASSERT(rc == 0);
+}
 int
 ble_transport_register_put_acl_from_ll_cb(os_mempool_put_fn (*cb))
 {
@@ -218,3 +236,4 @@ ble_transport_register_put_acl_from_ll_cb(os_mempool_put_fn (*cb))
 
     return 0;
 }
+#endif
