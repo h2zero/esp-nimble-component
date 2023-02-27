@@ -167,7 +167,6 @@ ble_transport_acl_put(struct os_mempool_ext *mpe, void *data, void *arg)
     do_put = true;
     from_ll = (pkthdr->omp_flags & OMP_FLAG_FROM_MASK) == OMP_FLAG_FROM_LL;
     err = 0;
-    from_ll = true;
 
     if (from_ll && transport_put_acl_from_ll_cb) {
         err = transport_put_acl_from_ll_cb(mpe, data, arg);
