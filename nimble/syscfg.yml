@@ -113,6 +113,11 @@ syscfg.defs:
             This enabled LE Power Control feature
         value: 0
 
+    BLE_GATT_BLOB_TRANSFER:
+        description: >
+            This enables write blob feature
+        value: 1
+
 # Allow periodic sync transfer only if 5.1 or higher
 syscfg.restrictions:
     - "'BLE_PERIODIC_ADV_SYNC_TRANSFER == 0' || 'BLE_VERSION >= 51'"
