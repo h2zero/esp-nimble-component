@@ -1018,13 +1018,13 @@ struct ble_gap_event {
 	    uint8_t phy;
 
 	    /** Transmit power Level */
-	    uint8_t transmit_power_level;
+	    int8_t transmit_power_level;
 
 	    /** Transmit Power Level Flag */
 	    uint8_t transmit_power_level_flag;
 
 	    /** Delta indicating change in transmit Power Level */
-	    uint8_t delta;
+	    int8_t delta;
 	} transmit_power;
 #endif
 
