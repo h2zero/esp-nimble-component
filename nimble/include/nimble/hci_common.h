@@ -1164,6 +1164,13 @@ struct ble_hci_vs_css_set_conn_slot_cp {
     uint16_t slot_idx;
 } __attribute__((packed));
 
+#define BLE_HCI_OCF_VS_DUPLICATE_EXCEPTION_LIST         (MYNEWT_VAL(BLE_HCI_VS_OCF_OFFSET) + (0x0108))
+struct ble_hci_vs_duplicate_exception_list_cp {
+    uint8_t operation;
+    uint32_t type;
+    uint8_t device_info[6];
+} __attribute__((packed));
+
 /* Command Specific Definitions */
 /* --- Set controller to host flow control (OGF 0x03, OCF 0x0031) --- */
 #define BLE_HCI_CTLR_TO_HOST_FC_OFF         (0)
