@@ -1723,6 +1723,9 @@ ble_att_svr_build_read_group_type_rsp(uint16_t conn_handle,
 
     *att_err = 0;
     *err_handle = start_handle;
+    start_group_handle = 0;
+
+    entry = NULL;
 
     mtu = ble_att_mtu(conn_handle);
 
@@ -1740,7 +1743,6 @@ ble_att_svr_build_read_group_type_rsp(uint16_t conn_handle,
         goto done;
     }
 
-    start_group_handle = 0;
     rsp->bagp_length = 0;
     STAILQ_FOREACH(entry, &ble_att_svr_list, ha_next) {
         if (entry->ha_handle_id < start_handle) {
