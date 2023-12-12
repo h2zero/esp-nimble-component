@@ -59,6 +59,15 @@ struct os_mbuf;
 #define BLE_ATT_ERR_DB_OUT_OF_SYNC          0x12
 #define BLE_ATT_ERR_VALUE_NOT_ALLOWED       0x13
 
+/** @} */
+
+/**
+ * @defgroup ble_att_op_codes Attribute Protocol (ATT) Operation Codes
+ * @{
+ */
+
+/** Error Response. */
+
 #define BLE_ATT_OP_ERROR_RSP                0x01
 #define BLE_ATT_OP_MTU_REQ                  0x02
 #define BLE_ATT_OP_MTU_RSP                  0x03
