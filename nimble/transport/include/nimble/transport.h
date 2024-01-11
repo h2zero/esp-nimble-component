@@ -61,11 +61,19 @@ extern "C" {
 /* Host-to-controller command. */
 #define BLE_HCI_TRANS_BUF_CMD       3
 
+void ble_transport_init(void);
+
+esp_err_t ble_buf_alloc(void);
+
+void ble_buf_free(void);
+
+void ble_transport_deinit(void);
+
 /** Callback function types; executed when HCI packets are received. */
 typedef int ble_hci_trans_rx_cmd_fn(uint8_t *cmd, void *arg);
 typedef int ble_hci_trans_rx_acl_fn(struct os_mbuf *om, void *arg);
 
-#if SOC_ESP_NIMBLE_CONTROLLER
+#if SOC_ESP_NIMBLE_CONTROLLER && CONFIG_BT_CONTROLLER_ENABLED
 #define ble_transport_alloc_cmd() ble_hci_trans_buf_alloc(BLE_HCI_TRANS_BUF_CMD)
 #define ble_transport_alloc_event(X) ble_hci_trans_buf_alloc(X ? BLE_HCI_TRANS_BUF_EVT_LO : BLE_HCI_TRANS_BUF_EVT_HI)
 #define ble_transport_free ble_hci_trans_buf_free
@@ -325,7 +333,7 @@ int esp_ble_hci_trans_reset(void);
 struct os_mbuf;
 
 /* Allocators for supported data types */
-#if !SOC_ESP_NIMBLE_CONTROLLER
+#if !SOC_ESP_NIMBLE_CONTROLLER || !CONFIG_BT_CONTROLLER_ENABLED
 void *ble_transport_alloc_cmd(void);
 void *ble_transport_alloc_evt(int discardable);
 struct os_mbuf *ble_transport_alloc_acl_from_hs(void);
@@ -339,8 +347,10 @@ void ble_transport_free(void *buf);
 int ble_transport_register_put_acl_from_ll_cb(os_mempool_put_fn *cb);
 
 /* Send data to hs/ll side */
+#if CONFIG_BT_CONTROLLER_ENABLED
 #define ble_transport_to_ll_acl ble_hci_trans_hs_acl_tx
 #define ble_transport_to_ll_cmd ble_hci_trans_hs_cmd_tx
+#endif
 
 int ble_transport_to_hs_evt(void *buf);
 int ble_transport_to_hs_acl(struct os_mbuf *om);

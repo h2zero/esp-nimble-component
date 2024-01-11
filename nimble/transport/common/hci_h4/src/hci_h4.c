@@ -27,6 +27,10 @@
 #include <nimble/transport.h>
 #include <nimble/transport/hci_h4.h>
 
+#ifndef min
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#endif
+
 #define HCI_H4_SM_W4_PKT_TYPE   0
 #define HCI_H4_SM_W4_HEADER     1
 #define HCI_H4_SM_W4_PAYLOAD    2

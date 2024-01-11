@@ -62,7 +62,7 @@ void os_msys_buf_free(void);
                                        BLE_MBUF_MEMBLOCK_OVERHEAD +         \
                                        BLE_HCI_DATA_HDR_SZ, OS_ALIGNMENT))
 
-#if !SOC_ESP_NIMBLE_CONTROLLER
+#if !SOC_ESP_NIMBLE_CONTROLLER || !CONFIG_BT_CONTROLLER_ENABLED
 static os_membuf_t *pool_cmd_buf;
 static struct os_mempool pool_cmd;
 
