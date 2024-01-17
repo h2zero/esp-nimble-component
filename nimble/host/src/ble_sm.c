@@ -754,8 +754,13 @@ static void
 ble_sm_rx_noop(uint16_t conn_handle, struct os_mbuf **om,
                struct ble_sm_result *res)
 {
+    /**
+     * Unsupported PDU received
+     * Recommended action: Ignore
+     */
     res->app_status = BLE_HS_SM_US_ERR(BLE_SM_ERR_CMD_NOT_SUPP);
     res->sm_err = BLE_SM_ERR_CMD_NOT_SUPP;
+    res->out_of_order = 1;
 }
 
 static uint8_t
@@ -949,6 +954,17 @@ ble_sm_process_result(uint16_t conn_handle, struct ble_sm_result *res)
     struct ble_hs_conn *conn;
 
     rm = 0;
+
+    if (res && res->out_of_order) {
+        /**
+         * An unexpected SM PDU received.
+         * Spec recommends ignore the PDU.
+         */
+        memset(res, 0, sizeof *res);
+        res->sm_err = BLE_SM_ERR_UNSPECIFIED;
+        res->app_status = BLE_HS_SM_US_ERR(BLE_SM_ERR_UNSPECIFIED);
+        return;
+    }
 
     while (1) {
         ble_hs_lock();
@@ -1536,7 +1552,12 @@ ble_sm_random_rx(uint16_t conn_handle, struct os_mbuf **om,
     ble_hs_lock();
     proc = ble_sm_proc_find(conn_handle, BLE_SM_PROC_STATE_RANDOM, -1, NULL);
     if (proc == NULL) {
+        /**
+         * Unexpectedly received pairing random value.
+         * Recommended action: Ignore
+         */
         res->app_status = BLE_HS_ENOENT;
+        res->out_of_order = 1;
     } else {
         memcpy(ble_sm_peer_pair_rand(proc), cmd->value, 16);
 
@@ -1584,7 +1605,12 @@ ble_sm_confirm_rx(uint16_t conn_handle, struct os_mbuf **om,
     ble_hs_lock();
     proc = ble_sm_proc_find(conn_handle, BLE_SM_PROC_STATE_CONFIRM, -1, NULL);
     if (proc == NULL) {
+        /**
+         * Unexpectedly received pairing confirm value.
+         * Recommended action: Ignore
+         */
         res->app_status = BLE_HS_ENOENT;
+        res->out_of_order = 1;
     } else {
         memcpy(proc->confirm_peer, cmd->value, 16);
 
@@ -1841,12 +1867,13 @@ ble_sm_pair_req_rx(uint16_t conn_handle, struct os_mbuf **om,
      */
     proc = ble_sm_proc_find(conn_handle, BLE_SM_PROC_STATE_NONE, -1, &prev);
     if (proc != NULL) {
-        /* Fail if procedure is in progress unless we sent a slave security
+        /* Ignore if procedure is in progress unless we sent a slave security
          * request to peer.
          */
         if (proc->state != BLE_SM_PROC_STATE_SEC_REQ) {
             res->sm_err = BLE_SM_ERR_UNSPECIFIED;
             res->app_status = BLE_HS_SM_US_ERR(BLE_SM_ERR_UNSPECIFIED);
+            res->out_of_order = 1;
             ble_hs_unlock();
             return;
         }
@@ -1992,6 +2019,14 @@ ble_sm_pair_rsp_rx(uint16_t conn_handle, struct os_mbuf **om,
                 }
             }
         }
+    } else {
+        /**
+         * Unexpectedly received pairing response.
+         * Recommended action: Ignore
+         */
+        res->sm_err = BLE_SM_ERR_UNSPECIFIED;
+        res->app_status = BLE_HS_SM_US_ERR(BLE_SM_ERR_UNSPECIFIED);
+        res->out_of_order = 1;
     }
 
     ble_hs_unlock();
@@ -2032,6 +2067,7 @@ ble_sm_sec_req_rx(uint16_t conn_handle, struct os_mbuf **om,
     struct ble_hs_conn_addrs addrs;
     struct ble_sm_sec_req *cmd;
     struct ble_hs_conn *conn;
+    struct ble_sm_proc *proc;
     int authreq_mitm;
 
     res->app_status = ble_hs_mbuf_pullup_base(om, sizeof(*cmd));
@@ -2080,6 +2116,16 @@ ble_sm_sec_req_rx(uint16_t conn_handle, struct os_mbuf **om,
             if (authreq_mitm && !value_sec.authenticated) {
                 res->app_status = BLE_HS_EREJECT;
             }
+        }
+
+        /** Make sure a procedure isn't already in progress for this connection. */
+        ble_hs_lock();
+        proc = ble_sm_proc_find(conn_handle, BLE_SM_PROC_STATE_NONE, -1, NULL);
+        ble_hs_unlock();
+        if (proc != NULL) {
+            res->out_of_order = 1;
+            proc = NULL;
+            return;
         }
 
         if (res->app_status == 0) {
@@ -2331,8 +2377,13 @@ ble_sm_enc_info_rx(uint16_t conn_handle, struct os_mbuf **om,
 
     proc = ble_sm_proc_find(conn_handle, BLE_SM_PROC_STATE_KEY_EXCH, -1, NULL);
     if (proc == NULL) {
+        /**
+         * Unexpected encryption info received
+         * Recommended action: Ignore
+         */
         res->app_status = BLE_HS_ENOENT;
         res->sm_err = BLE_SM_ERR_UNSPECIFIED;
+        res->out_of_order = 1;
     } else {
         proc->rx_key_flags &= ~BLE_SM_KE_F_ENC_INFO;
         proc->peer_keys.ltk_valid = 1;
@@ -2365,8 +2416,13 @@ ble_sm_master_id_rx(uint16_t conn_handle, struct os_mbuf **om,
 
     proc = ble_sm_proc_find(conn_handle, BLE_SM_PROC_STATE_KEY_EXCH, -1, NULL);
     if (proc == NULL) {
+        /**
+         * Unexpected central indentification info recieved
+         * Recommended action: Ignore
+         */
         res->app_status = BLE_HS_ENOENT;
         res->sm_err = BLE_SM_ERR_UNSPECIFIED;
+        res->out_of_order = 1;
     } else {
         proc->rx_key_flags &= ~BLE_SM_KE_F_MASTER_ID;
         proc->peer_keys.ediv_rand_valid = 1;
@@ -2400,8 +2456,13 @@ ble_sm_id_info_rx(uint16_t conn_handle, struct os_mbuf **om,
 
     proc = ble_sm_proc_find(conn_handle, BLE_SM_PROC_STATE_KEY_EXCH, -1, NULL);
     if (proc == NULL) {
+        /**
+         * Unexpected ID info received
+         * Recommended action: Ignore
+         */
         res->app_status = BLE_HS_ENOENT;
         res->sm_err = BLE_SM_ERR_UNSPECIFIED;
+        res->out_of_order = 1;
     } else {
         proc->rx_key_flags &= ~BLE_SM_KE_F_ID_INFO;
 
@@ -2434,8 +2495,13 @@ ble_sm_id_addr_info_rx(uint16_t conn_handle, struct os_mbuf **om,
 
     proc = ble_sm_proc_find(conn_handle, BLE_SM_PROC_STATE_KEY_EXCH, -1, NULL);
     if (proc == NULL) {
+        /**
+         * Unexpected identity address info received
+         * Recommended action: Ignore
+         */
         res->app_status = BLE_HS_ENOENT;
         res->sm_err = BLE_SM_ERR_UNSPECIFIED;
+        res->out_of_order = 1;
     } else {
         proc->rx_key_flags &= ~BLE_SM_KE_F_ADDR_INFO;
         proc->peer_keys.addr_valid = 1;
@@ -2468,8 +2534,13 @@ ble_sm_sign_info_rx(uint16_t conn_handle, struct os_mbuf **om,
 
     proc = ble_sm_proc_find(conn_handle, BLE_SM_PROC_STATE_KEY_EXCH, -1, NULL);
     if (proc == NULL) {
+        /**
+         * Unexpected signing info received
+         * Recommended action: Ignore
+         */
         res->app_status = BLE_HS_ENOENT;
         res->sm_err = BLE_SM_ERR_UNSPECIFIED;
+        res->out_of_order = 1;
     } else {
         proc->rx_key_flags &= ~BLE_SM_KE_F_SIGN_INFO;
 
