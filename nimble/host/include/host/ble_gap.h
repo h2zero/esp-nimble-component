@@ -158,7 +158,7 @@ struct hci_conn_update;
 #define BLE_GAP_EVENT_REATTEMPT_COUNT       29
 #define BLE_GAP_EVENT_AUTHORIZE             30
 #define BLE_GAP_EVENT_TEST_UPDATE           31
-
+#define BLE_GAP_EVENT_DATA_LEN_CHG          32
 
 /* DTM events */
 #define BLE_GAP_DTM_TX_START_EVT            0
@@ -1176,6 +1176,29 @@ struct ble_gap_event {
 	     */
             uint16_t num_pkt;
 	} dtm_state;
+
+        /**
+	 * Represent an event for LE Data length change
+	 *
+	 * Valid for the following event types:
+	 *      o BLE_GAP_EVENT_DATA_LEN_CHG
+	 */
+	struct {
+            /* Connection handle */
+	    uint16_t conn_handle;
+
+	    /* Max Tx Payload octotes */
+	    uint16_t max_tx_octets;
+
+	    /* Max Tx Time */
+	    uint16_t max_tx_time;
+
+	    /* Max Rx payload octet */
+	    uint16_t max_rx_octets;
+
+	    /* Max Rx Time */
+	    uint16_t max_rx_time;
+	} data_len_chg;
     };
 };
 
