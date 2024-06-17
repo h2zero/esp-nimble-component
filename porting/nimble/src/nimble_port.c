@@ -45,7 +45,7 @@
 #include "nimble/transport.h"
 #endif
 #if (BT_HCI_LOG_INCLUDED == TRUE)
-#include "hci_log/bt_hci_log.h"
+//#include "hci_log/bt_hci_log.h"
 #endif // (BT_HCI_LOG_INCLUDED == TRUE)
 #include "bt_common.h"
 
@@ -53,7 +53,7 @@
 
 extern void os_msys_init(void);
 
-#if CONFIG_BT_NIMBLE_ENABLED 
+#if CONFIG_BT_NIMBLE_ENABLED
 
 extern void ble_hs_deinit(void);
 static struct ble_hs_stop_listener stop_listener;
@@ -84,8 +84,8 @@ nimble_port_stop_cb(struct ble_npl_event *ev)
 
 /**
  * @brief esp_nimble_init - Initialize the NimBLE host stack
- * 
- * @return esp_err_t 
+ *
+ * @return esp_err_t
  */
 esp_err_t esp_nimble_init(void)
 {
@@ -133,8 +133,8 @@ esp_err_t esp_nimble_init(void)
 
 /**
  * @brief esp_nimble_deinit - Deinitialize the NimBLE host stack
- * 
- * @return esp_err_t 
+ *
+ * @return esp_err_t
  */
 esp_err_t esp_nimble_deinit(void)
 {
