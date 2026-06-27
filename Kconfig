@@ -3,13 +3,14 @@ menu "Bluetooth"
     config BT_ENABLED
         bool "Bluetooth"
         depends on !APP_NO_BLOBS
+        default y
         help
             Select this option to enable Bluetooth and show the submenu with Bluetooth configuration choices.
 
     choice BT_HOST
         prompt "Host"
         depends on BT_ENABLED
-        default BT_BLUEDROID_ENABLED
+        default BT_NIMBLE_ENABLED
         help
             This helps to choose Bluetooth host stack
 
@@ -112,6 +113,10 @@ menu "Bluetooth"
             This is a ring buffer, the new data will overwrite the oldest data if the buffer is full.
 
 endmenu
+
+config USING_NIMBLE_COMPONENT
+    bool 
+    default y
 
 menuconfig BLE_MESH
     bool "ESP BLE Mesh Support"

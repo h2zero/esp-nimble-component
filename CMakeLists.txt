@@ -4,10 +4,7 @@ if(${target} STREQUAL "linux")
     return()
 endif()
 
-set(IDF_BT_COMPONENT_DIR "$ENV{IDF_PATH}/components/bt")
-if(NOT EXISTS "${IDF_BT_COMPONENT_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR "ESP-IDF BT component not found at ${IDF_BT_COMPONENT_DIR}")
-endif()
+set(SYSTEM_BT_DIR "$ENV{IDF_PATH}/components/bt")
 
 if(CONFIG_IDF_TARGET_ESP32S3)
     set(target_name "esp32c3")
@@ -21,102 +18,87 @@ if(CONFIG_BT_ENABLED)
     set(srcs "")
     set(include_dirs "")
     set(priv_include_dirs "")
-    set(ldscripts "${IDF_BT_COMPONENT_DIR}/linker_common.lf")
+    set(ldscripts "${SYSTEM_BT_DIR}/linker_common.lf")
 
     if(CONFIG_BT_CONTROLLER_ENABLED)
-        list(APPEND include_dirs "${IDF_BT_COMPONENT_DIR}/include/${target_name}/include")
+        list(APPEND include_dirs "${SYSTEM_BT_DIR}/include/${target_name}/include")
 
         if(CONFIG_IDF_TARGET_ESP32)
             list(APPEND srcs
-                "${IDF_BT_COMPONENT_DIR}/controller/esp32/bt.c"
-                "${IDF_BT_COMPONENT_DIR}/controller/esp32/hli_api.c"
-                "${IDF_BT_COMPONENT_DIR}/controller/esp32/hli_vectors.S"
+                "${SYSTEM_BT_DIR}/controller/esp32/bt.c"
+                "${SYSTEM_BT_DIR}/controller/esp32/hli_api.c"
+                "${SYSTEM_BT_DIR}/controller/esp32/hli_vectors.S"
             )
-            list(APPEND ldscripts "${IDF_BT_COMPONENT_DIR}/linker_rw_bt_controller.lf")
+            list(APPEND ldscripts "${SYSTEM_BT_DIR}/linker_rw_bt_controller.lf")
         elseif(CONFIG_IDF_TARGET_ESP32C3 OR CONFIG_IDF_TARGET_ESP32S3)
-            list(APPEND srcs "${IDF_BT_COMPONENT_DIR}/controller/${target_name}/bt.c")
-            list(APPEND ldscripts "${IDF_BT_COMPONENT_DIR}/linker_rw_bt_controller.lf")
+            list(APPEND srcs "${SYSTEM_BT_DIR}/controller/${target_name}/bt.c")
+            list(APPEND ldscripts "${SYSTEM_BT_DIR}/linker_rw_bt_controller.lf")
         elseif(CONFIG_IDF_TARGET_ESP32C2)
             list(APPEND srcs
-                "${IDF_BT_COMPONENT_DIR}/controller/esp32c2/bt.c"
-                "${IDF_BT_COMPONENT_DIR}/controller/esp32c2/ble.c"
+                "${SYSTEM_BT_DIR}/controller/esp32c2/bt.c"
+                "${SYSTEM_BT_DIR}/controller/esp32c2/ble.c"
             )
             if(CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY)
-                list(APPEND srcs "${IDF_BT_COMPONENT_DIR}/controller/esp32c2/dummy.c")
+                list(APPEND srcs "${SYSTEM_BT_DIR}/controller/esp32c2/dummy.c")
             endif()
-            list(APPEND ldscripts "${IDF_BT_COMPONENT_DIR}/linker_esp32c2.lf")
+            list(APPEND ldscripts "${SYSTEM_BT_DIR}/linker_esp32c2.lf")
         else()
             list(APPEND srcs
-                "${IDF_BT_COMPONENT_DIR}/controller/${target_name}/bt.c"
-                "${IDF_BT_COMPONENT_DIR}/controller/${target_name}/ble.c"
+                "${SYSTEM_BT_DIR}/controller/${target_name}/bt.c"
+                "${SYSTEM_BT_DIR}/controller/${target_name}/ble.c"
             )
-            list(APPEND ldscripts "${IDF_BT_COMPONENT_DIR}/linker_esp_ble_controller.lf")
+            list(APPEND ldscripts "${SYSTEM_BT_DIR}/linker_esp_ble_controller.lf")
         endif()
     endif()
 
     list(APPEND include_dirs
-        "${IDF_BT_COMPONENT_DIR}/common/osi/include"
-        "${IDF_BT_COMPONENT_DIR}/common/api/include/api"
-        "${IDF_BT_COMPONENT_DIR}/common/btc/profile/esp/blufi/include"
-        "${IDF_BT_COMPONENT_DIR}/common/btc/profile/esp/include"
-        "${IDF_BT_COMPONENT_DIR}/common/hci_log/include"
-        "${IDF_BT_COMPONENT_DIR}/common/ble_log/include"
-        "$ENV{IDF_PATH}/components/esp_wifi/include"
-        "$ENV{IDF_PATH}/components/esp_timer/include"
-        "$ENV{IDF_PATH}/components/esp_phy/include"
-        "$ENV{IDF_PATH}/components/esp_event/include"
-        "$ENV{IDF_PATH}/components/esp_netif/include"
-        "$ENV{IDF_PATH}/components/esp_pm/include"
-        "$ENV{IDF_PATH}/components/esp_coex/include"
-        "$ENV{IDF_PATH}/components/nvs_flash/include"
-        "$ENV{IDF_PATH}/components/esp_partition/include"
-        "$ENV{IDF_PATH}/components/mbedtls/mbedtls/include"
-        "$ENV{IDF_PATH}/components/mbedtls/port/include"
-        "$ENV{IDF_PATH}/components/esp_driver_uart/include"
-        "$ENV{IDF_PATH}/components/vfs/include"
-        "$ENV{IDF_PATH}/components/esp_ringbuf/include"
-        "$ENV{IDF_PATH}/components/esp_driver_spi/include"
-        "$ENV{IDF_PATH}/components/esp_driver_gpio/include"
+        "${SYSTEM_BT_DIR}/common/osi/include"
+        "${SYSTEM_BT_DIR}/common/api/include/api"
+        "${SYSTEM_BT_DIR}/common/btc/profile/esp/blufi/include"
+        "${SYSTEM_BT_DIR}/common/btc/profile/esp/include"
+        "${SYSTEM_BT_DIR}/common/hci_log/include"
+        "${SYSTEM_BT_DIR}/common/ble_log/include"
     )
 
     list(APPEND priv_include_dirs
-        "${IDF_BT_COMPONENT_DIR}/common/btc/include"
-        "${IDF_BT_COMPONENT_DIR}/common/include"
-        "${IDF_BT_COMPONENT_DIR}/porting/mem"
-        "${IDF_BT_COMPONENT_DIR}/porting/include"
+        "${SYSTEM_BT_DIR}/common/btc/include"
+        "${SYSTEM_BT_DIR}/common/include"
+        "${SYSTEM_BT_DIR}/porting/mem"
+        "${SYSTEM_BT_DIR}/porting/include"
+        "${SYSTEM_BT_DIR}/porting/transport/include"
     )
 
     list(APPEND srcs
-        "${IDF_BT_COMPONENT_DIR}/common/btc/core/btc_alarm.c"
-        "${IDF_BT_COMPONENT_DIR}/common/api/esp_blufi_api.c"
-        "${IDF_BT_COMPONENT_DIR}/common/hci_log/bt_hci_log.c"
-        "${IDF_BT_COMPONENT_DIR}/common/btc/core/btc_manage.c"
-        "${IDF_BT_COMPONENT_DIR}/common/btc/core/btc_task.c"
-        "${IDF_BT_COMPONENT_DIR}/common/btc/profile/esp/blufi/blufi_prf.c"
-        "${IDF_BT_COMPONENT_DIR}/common/btc/profile/esp/blufi/blufi_protocol.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/alarm.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/allocator.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/buffer.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/config.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/fixed_queue.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/pkt_queue.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/fixed_pkt_queue.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/future.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/hash_functions.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/hash_map.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/list.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/mutex.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/thread.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/osi.c"
-        "${IDF_BT_COMPONENT_DIR}/common/osi/semaphore.c"
-        "${IDF_BT_COMPONENT_DIR}/porting/mem/bt_osi_mem.c"
-        "${IDF_BT_COMPONENT_DIR}/common/ble_log/ble_log_spi_out.c"
+        "${SYSTEM_BT_DIR}/common/btc/core/btc_alarm.c"
+        "${SYSTEM_BT_DIR}/common/api/esp_blufi_api.c"
+        "${SYSTEM_BT_DIR}/common/hci_log/bt_hci_log.c"
+        "${SYSTEM_BT_DIR}/common/btc/core/btc_manage.c"
+        "${SYSTEM_BT_DIR}/common/btc/core/btc_task.c"
+        "${SYSTEM_BT_DIR}/common/btc/profile/esp/blufi/blufi_prf.c"
+        "${SYSTEM_BT_DIR}/common/btc/profile/esp/blufi/blufi_protocol.c"
+        "${SYSTEM_BT_DIR}/common/osi/alarm.c"
+        "${SYSTEM_BT_DIR}/common/osi/allocator.c"
+        "${SYSTEM_BT_DIR}/common/osi/buffer.c"
+        "${SYSTEM_BT_DIR}/common/osi/config.c"
+        "${SYSTEM_BT_DIR}/common/osi/fixed_queue.c"
+        "${SYSTEM_BT_DIR}/common/osi/pkt_queue.c"
+        "${SYSTEM_BT_DIR}/common/osi/fixed_pkt_queue.c"
+        "${SYSTEM_BT_DIR}/common/osi/future.c"
+        "${SYSTEM_BT_DIR}/common/osi/hash_functions.c"
+        "${SYSTEM_BT_DIR}/common/osi/hash_map.c"
+        "${SYSTEM_BT_DIR}/common/osi/list.c"
+        "${SYSTEM_BT_DIR}/common/osi/mutex.c"
+        "${SYSTEM_BT_DIR}/common/osi/thread.c"
+        "${SYSTEM_BT_DIR}/common/osi/osi.c"
+        "${SYSTEM_BT_DIR}/common/osi/semaphore.c"
+        "${SYSTEM_BT_DIR}/porting/mem/bt_osi_mem.c"
+        "${SYSTEM_BT_DIR}/common/ble_log/ble_log_spi_out.c"
     )
 
     if(CONFIG_BT_NIMBLE_ENABLED)
         set(NIMBLE_ROOT "${CMAKE_CURRENT_LIST_DIR}/host/nimble")
 
-        set(nimble_include_dirs
+        list(APPEND include_dirs
             "${NIMBLE_ROOT}/nimble/nimble/host/include"
             "${NIMBLE_ROOT}/nimble/nimble/include"
             "${NIMBLE_ROOT}/nimble/nimble/host/services/ans/include"
@@ -141,11 +123,10 @@ if(CONFIG_BT_ENABLED)
             "${NIMBLE_ROOT}/nimble/porting/nimble/include"
             "${NIMBLE_ROOT}/port/include"
             "${NIMBLE_ROOT}/nimble/nimble/transport/include"
-            "${NIMBLE_ROOT}/nimble/porting/npl/freertos/include"
             "${NIMBLE_ROOT}/esp-hci/include"
-            "${IDF_BT_COMPONENT_DIR}/porting/include"
+            "${SYSTEM_BT_DIR}/porting/include"
+            "${SYSTEM_BT_DIR}/porting/transport/include"
         )
-        list(APPEND include_dirs ${nimble_include_dirs})
 
         file(GLOB nimble_host_srcs "${NIMBLE_ROOT}/nimble/nimble/host/src/*.c")
         file(GLOB nimble_services_srcs "${NIMBLE_ROOT}/nimble/nimble/host/services/*/src/*.c")
@@ -168,24 +149,52 @@ if(CONFIG_BT_ENABLED)
             "${NIMBLE_ROOT}/nimble/nimble/transport/src/transport.c"
             ${nimble_host_srcs}
             ${nimble_services_srcs}
-            "${NIMBLE_ROOT}/nimble/nimble/host/util/src/addr.c"
-            "${NIMBLE_ROOT}/nimble/nimble/host/store/ram/src/ble_store_ram.c"
-            "${NIMBLE_ROOT}/nimble/nimble/host/store/config/src/ble_store_config.c"
-            "${NIMBLE_ROOT}/nimble/nimble/host/store/config/src/ble_store_nvs.c"
-            "${NIMBLE_ROOT}/nimble/porting/nimble/src/nimble_port.c"
+            ${nimble_crypto_srcs}
             "${NIMBLE_ROOT}/nimble/porting/nimble/src/endian.c"
             "${NIMBLE_ROOT}/nimble/porting/nimble/src/os_mempool.c"
             "${NIMBLE_ROOT}/nimble/porting/nimble/src/mem.c"
             "${NIMBLE_ROOT}/nimble/porting/nimble/src/os_mbuf.c"
             "${NIMBLE_ROOT}/nimble/porting/nimble/src/os_msys_init.c"
-            ${nimble_crypto_srcs}
+            "${NIMBLE_ROOT}/nimble/nimble/host/util/src/addr.c"
+            "${NIMBLE_ROOT}/nimble/nimble/host/store/ram/src/ble_store_ram.c"
+            "${NIMBLE_ROOT}/nimble/nimble/host/store/config/src/ble_store_config.c"
+            "${NIMBLE_ROOT}/nimble/nimble/host/store/config/src/ble_store_nvs.c"
             "${NIMBLE_ROOT}/nimble/porting/npl/freertos/src/nimble_port_freertos.c"
-            "${NIMBLE_ROOT}/nimble/porting/npl/freertos/src/npl_os_freertos.c"
+            "${NIMBLE_ROOT}/nimble/porting/nimble/src/nimble_port.c"
             "${NIMBLE_ROOT}/port/src/nvs_port.c"
+        )
+    endif()
+
+    if(NOT CONFIG_BT_LE_CONTROLLER_NPL_OS_PORTING_SUPPORT)
+        list(APPEND srcs
+            "${NIMBLE_ROOT}/nimble/porting/npl/freertos/src/npl_os_freertos.c"
+        )
+
+        list(APPEND include_dirs
+            "${NIMBLE_ROOT}/nimble/porting/npl/freertos/include"
+        )
+        
+    else()
+        list(APPEND srcs
+            "${NIMBLE_ROOT}/nimble/nimble/transport/esp_ipc/src/hci_esp_ipc.c"
+            "${SYSTEM_BT_DIR}/porting/transport/src/hci_transport.c"
+            "${SYSTEM_BT_DIR}/porting/transport/driver/vhci/hci_driver_nimble.c"
+            "${SYSTEM_BT_DIR}/porting/npl/freertos/src/npl_os_freertos.c"
+        )
+
+        list(APPEND include_dirs
+            "${SYSTEM_BT_DIR}/porting/npl/freertos/include"
+        )
+        
+    endif()
+
+    if(CONFIG_BT_NIMBLE_LEGACY_VHCI_ENABLE AND CONFIG_BT_CONTROLLER_ENABLED)
+        list(APPEND srcs
             "${NIMBLE_ROOT}/esp-hci/src/esp_nimble_hci.c"
             "${NIMBLE_ROOT}/nimble/nimble/transport/esp_ipc_legacy/src/hci_esp_ipc_legacy.c"
-            "${IDF_BT_COMPONENT_DIR}/common/btc/profile/esp/blufi/nimble_host/esp_blufi.c"
+            "${SYSTEM_BT_DIR}/common/btc/profile/esp/blufi/nimble_host/esp_blufi.c"
         )
+        list(APPEND include_dirs ${nimble_hci_include_dirs})
     endif()
 
     idf_component_register(
@@ -197,55 +206,106 @@ if(CONFIG_BT_ENABLED)
         LDFRAGMENTS ${ldscripts}
     )
 
+    target_include_directories(${COMPONENT_LIB} PUBLIC
+        "$ENV{IDF_PATH}/components/esp_timer/include"
+        "$ENV{IDF_PATH}/components/esp_phy/include"
+        "$ENV{IDF_PATH}/components/esp_wifi/include"
+        "$ENV{IDF_PATH}/components/esp_event/include"
+        "$ENV{IDF_PATH}/components/esp_pm/include"
+        "$ENV{IDF_PATH}/components/esp_coex/include"
+        "$ENV{IDF_PATH}/components/nvs_flash/include"
+        "$ENV{IDF_PATH}/components/esp_partition/include"
+        "$ENV{IDF_PATH}/components/esp_blockdev/include"
+        "$ENV{IDF_PATH}/components/esp_driver_spi/include"
+        "$ENV{IDF_PATH}/components/esp_driver_gpio/include"
+        "$ENV{IDF_PATH}/components/esp_hal_gpspi/include"
+    )
+
+    target_include_directories(${COMPONENT_LIB} PUBLIC 
+        "${LOCAL_BT_DIR}/host/nimble/nimble/host/include"
+        "${LOCAL_BT_DIR}/host/nimble/nimble/include"
+        "${LOCAL_BT_DIR}/host/nimble/porting/nimble/include"
+        "${LOCAL_BT_DIR}/host/nimble/porting/npl/freertos/include"
+        "${LOCAL_BT_DIR}/host/nimble/port/include"
+    )
+
     if(CONFIG_IDF_TARGET_ESP32)
-        set_source_files_properties("${IDF_BT_COMPONENT_DIR}/controller/esp32/hli_vectors.S" PROPERTIES COMPILE_FLAGS "-x assembler-with-cpp")
+        set_source_files_properties("${SYSTEM_BT_DIR}/controller/esp32/hli_vectors.S" PROPERTIES COMPILE_FLAGS "-x assembler-with-cpp")
     endif()
 
-    target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-implicit-fallthrough -Wno-unused-const-variable)
-    target_compile_options(${COMPONENT_LIB} PRIVATE "-Wno-format")
+    target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-implicit-fallthrough -Wno-unused-const-variable -Wno-format)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE MBEDTLS_CONFIG_FILE="mbedtls/esp_config.h")
-
+    
     if(CONFIG_IDF_TARGET_ESP32)
-        target_link_directories(${COMPONENT_LIB} INTERFACE "${IDF_BT_COMPONENT_DIR}/controller/lib_esp32/esp32")
+        target_link_directories(${COMPONENT_LIB} INTERFACE "${SYSTEM_BT_DIR}/controller/lib_esp32/esp32")
         target_link_libraries(${COMPONENT_LIB} PUBLIC btdm_app)
         target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ld_include_hli_vectors_bt")
+
+        add_prebuilt_library(bt_btdm_app "${SYSTEM_BT_DIR}/controller/lib_esp32/esp32/libbtdm_app.a")
+        target_link_libraries(${COMPONENT_LIB} PRIVATE bt_btdm_app)
+        target_link_options(${COMPONENT_LIB} INTERFACE "SHELL:-u ld_include_hli_vectors_bt")
+        
     elseif(CONFIG_IDF_TARGET_ESP32C3)
-        target_link_directories(${COMPONENT_LIB} INTERFACE "${IDF_BT_COMPONENT_DIR}/controller/lib_esp32c3_family/esp32c3")
         if(CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY)
-            target_link_libraries(${COMPONENT_LIB} PUBLIC btdm_app_flash)
+            set(lib_name "btdm_app_flash")
         else()
-            target_link_libraries(${COMPONENT_LIB} PUBLIC btdm_app)
-        endif()
-    elseif(CONFIG_IDF_TARGET_ESP32S3)
-        target_link_directories(${COMPONENT_LIB} INTERFACE "${IDF_BT_COMPONENT_DIR}/controller/lib_esp32c3_family/esp32s3")
-        if(CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY)
-            target_link_libraries(${COMPONENT_LIB} PUBLIC btdm_app_flash)
-        else()
-            target_link_libraries(${COMPONENT_LIB} PUBLIC btdm_app)
-        endif()
-    elseif(CONFIG_BT_CONTROLLER_ENABLED)
-        if(CONFIG_BT_LE_CONTROLLER_LOG_WRAP_PANIC_HANDLER_ENABLE)
-            target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")
+            set(lib_name "btdm_app")
         endif()
 
+        add_prebuilt_library(bt_btdm_app
+                             "${SYSTEM_BT_DIR}/controller/lib_esp32c3_family/esp32c3/lib${lib_name}.a")
+        target_link_libraries(${COMPONENT_LIB} PRIVATE bt_btdm_app)
+        
+    elseif(CONFIG_IDF_TARGET_ESP32S3)
+        if(CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY)
+            set(lib_name "btdm_app_flash")
+        else()
+            set(lib_name "btdm_app")
+        endif()
+
+        add_prebuilt_library(bt_btdm_app
+                             "${SYSTEM_BT_DIR}/controller/lib_esp32c3_family/esp32s3/lib${lib_name}.a")
+        target_link_libraries(${COMPONENT_LIB} PRIVATE bt_btdm_app)
+        
+    elseif(CONFIG_BT_CONTROLLER_ENABLED)
+        if(CONFIG_BT_LE_CONTROLLER_LOG_WRAP_PANIC_HANDLER_ENABLE)
+            target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")
+        endif()
+        if(CONFIG_BT_BLE_LOG_UHCI_OUT_ENABLED)
+            target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=uart_tx_chars")
+            target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=uart_write_bytes")
+            target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=uart_write_bytes_with_break")
+        endif()
+        if(DEFINED CONFIG_BLE_LOG_PRPH_UART_DMA_PORT)
+            if(CONFIG_BLE_LOG_PRPH_UART_DMA_PORT EQUAL 0)
+                target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=uart_tx_chars")
+                target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=uart_write_bytes")
+                target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=uart_write_bytes_with_break")
+            endif()
+        endif()
+        
         if(CONFIG_IDF_TARGET_ESP32C6)
             add_prebuilt_library(libble_app
-                "${IDF_BT_COMPONENT_DIR}/controller/lib_esp32c6/esp32c6-bt-lib/esp32c6/libble_app.a")
+                "${SYSTEM_BT_DIR}/controller/lib_esp32c6/esp32c6-bt-lib/esp32c6/libble_app.a"
+                REQUIRES esp_phy)
         elseif(CONFIG_IDF_TARGET_ESP32C61)
             add_prebuilt_library(libble_app
-                "${IDF_BT_COMPONENT_DIR}/controller/lib_esp32c6/esp32c6-bt-lib/esp32c61/libble_app.a")
+                "${SYSTEM_BT_DIR}/controller/lib_esp32c6/esp32c6-bt-lib/esp32c61/libble_app.a"
+                REQUIRES esp_phy)
         else()
             if(CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY AND CONFIG_IDF_TARGET_ESP32C2)
                 add_prebuilt_library(libble_app
-                    "${IDF_BT_COMPONENT_DIR}/controller/lib_${target_name}/${target_name}-bt-lib/libble_app_flash.a")
+                    "${SYSTEM_BT_DIR}/controller/lib_${target_name}/${target_name}-bt-lib/libble_app_flash.a"
+                    REQUIRES esp_phy)
             else()
                 add_prebuilt_library(libble_app
-                    "${IDF_BT_COMPONENT_DIR}/controller/lib_${target_name}/${target_name}-bt-lib/libble_app.a")
+                    "${SYSTEM_BT_DIR}/controller/lib_${target_name}/${target_name}-bt-lib/libble_app.a"
+                    REQUIRES esp_phy)
             endif()
         endif()
-
         target_link_libraries(${COMPONENT_LIB} PRIVATE libble_app)
     endif()
+
 else()
     idf_component_register()
 endif()
