@@ -4,7 +4,9 @@ if(${target} STREQUAL "linux")
     return()
 endif()
 
-set(SYSTEM_BT_DIR "$ENV{IDF_PATH}/components/bt")
+# Normalize IDF_PATH
+file(TO_CMAKE_PATH "$ENV{IDF_PATH}" IDF_PATH_NORM)
+set(SYSTEM_BT_DIR "${IDF_PATH_NORM}/components/bt")
 
 if(CONFIG_IDF_TARGET_ESP32S3)
     set(target_name "esp32c3")
@@ -143,6 +145,16 @@ if(CONFIG_BT_ENABLED)
             list(APPEND include_dirs "${NIMBLE_ROOT}/nimble/ext/tinycrypt/include")
             file(GLOB nimble_tinycrypt_srcs "${NIMBLE_ROOT}/nimble/ext/tinycrypt/src/*.c")
             list(APPEND nimble_crypto_srcs ${nimble_tinycrypt_srcs})
+        elseif(NOT CONFIG_MBEDTLS_VER_4_X_SUPPORT)
+            list(APPEND include_dirs
+                "${IDF_PATH_NORM}/components/mbedtls/mbedtls/include"
+                "${IDF_PATH_NORM}/components/mbedtls/port/include"
+            )
+        else()
+            list(APPEND include_dirs
+                "${IDF_PATH_NORM}/components/mbedtls/mbedtls/tf-psa-crypto/include"
+                "${IDF_PATH_NORM}/components/mbedtls/mbedtls/tf-psa-crypto/drivers/builtin/include"
+            )
         endif()
 
         list(APPEND srcs
@@ -173,7 +185,7 @@ if(CONFIG_BT_ENABLED)
         list(APPEND include_dirs
             "${NIMBLE_ROOT}/nimble/porting/npl/freertos/include"
         )
-        
+
     else()
         list(APPEND srcs
             "${NIMBLE_ROOT}/nimble/nimble/transport/esp_ipc/src/hci_esp_ipc.c"
@@ -185,7 +197,7 @@ if(CONFIG_BT_ENABLED)
         list(APPEND include_dirs
             "${SYSTEM_BT_DIR}/porting/npl/freertos/include"
         )
-        
+
     endif()
 
     if(CONFIG_BT_NIMBLE_LEGACY_VHCI_ENABLE AND CONFIG_BT_CONTROLLER_ENABLED)
@@ -207,26 +219,18 @@ if(CONFIG_BT_ENABLED)
     )
 
     target_include_directories(${COMPONENT_LIB} PUBLIC
-        "$ENV{IDF_PATH}/components/esp_timer/include"
-        "$ENV{IDF_PATH}/components/esp_phy/include"
-        "$ENV{IDF_PATH}/components/esp_wifi/include"
-        "$ENV{IDF_PATH}/components/esp_event/include"
-        "$ENV{IDF_PATH}/components/esp_pm/include"
-        "$ENV{IDF_PATH}/components/esp_coex/include"
-        "$ENV{IDF_PATH}/components/nvs_flash/include"
-        "$ENV{IDF_PATH}/components/esp_partition/include"
-        "$ENV{IDF_PATH}/components/esp_blockdev/include"
-        "$ENV{IDF_PATH}/components/esp_driver_spi/include"
-        "$ENV{IDF_PATH}/components/esp_driver_gpio/include"
-        "$ENV{IDF_PATH}/components/esp_hal_gpspi/include"
-    )
-
-    target_include_directories(${COMPONENT_LIB} PUBLIC 
-        "${LOCAL_BT_DIR}/host/nimble/nimble/host/include"
-        "${LOCAL_BT_DIR}/host/nimble/nimble/include"
-        "${LOCAL_BT_DIR}/host/nimble/porting/nimble/include"
-        "${LOCAL_BT_DIR}/host/nimble/porting/npl/freertos/include"
-        "${LOCAL_BT_DIR}/host/nimble/port/include"
+        "${IDF_PATH_NORM}/components/esp_timer/include"
+        "${IDF_PATH_NORM}/components/esp_phy/include"
+        "${IDF_PATH_NORM}/components/esp_wifi/include"
+        "${IDF_PATH_NORM}/components/esp_event/include"
+        "${IDF_PATH_NORM}/components/esp_pm/include"
+        "${IDF_PATH_NORM}/components/esp_coex/include"
+        "${IDF_PATH_NORM}/components/nvs_flash/include"
+        "${IDF_PATH_NORM}/components/esp_partition/include"
+        "${IDF_PATH_NORM}/components/esp_blockdev/include"
+        "${IDF_PATH_NORM}/components/esp_driver_spi/include"
+        "${IDF_PATH_NORM}/components/esp_driver_gpio/include"
+        "${IDF_PATH_NORM}/components/esp_hal_gpspi/include"
     )
 
     if(CONFIG_IDF_TARGET_ESP32)
@@ -234,8 +238,8 @@ if(CONFIG_BT_ENABLED)
     endif()
 
     target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-implicit-fallthrough -Wno-unused-const-variable -Wno-format)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE MBEDTLS_CONFIG_FILE="mbedtls/esp_config.h")
-    
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE MBEDTLS_CONFIG_FILE="${IDF_PATH_NORM}/components/mbedtls/port/include/mbedtls/esp_config.h")
+
     if(CONFIG_IDF_TARGET_ESP32)
         target_link_directories(${COMPONENT_LIB} INTERFACE "${SYSTEM_BT_DIR}/controller/lib_esp32/esp32")
         target_link_libraries(${COMPONENT_LIB} PUBLIC btdm_app)
@@ -244,7 +248,7 @@ if(CONFIG_BT_ENABLED)
         add_prebuilt_library(bt_btdm_app "${SYSTEM_BT_DIR}/controller/lib_esp32/esp32/libbtdm_app.a")
         target_link_libraries(${COMPONENT_LIB} PRIVATE bt_btdm_app)
         target_link_options(${COMPONENT_LIB} INTERFACE "SHELL:-u ld_include_hli_vectors_bt")
-        
+
     elseif(CONFIG_IDF_TARGET_ESP32C3)
         if(CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY)
             set(lib_name "btdm_app_flash")
@@ -255,7 +259,7 @@ if(CONFIG_BT_ENABLED)
         add_prebuilt_library(bt_btdm_app
                              "${SYSTEM_BT_DIR}/controller/lib_esp32c3_family/esp32c3/lib${lib_name}.a")
         target_link_libraries(${COMPONENT_LIB} PRIVATE bt_btdm_app)
-        
+
     elseif(CONFIG_IDF_TARGET_ESP32S3)
         if(CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY)
             set(lib_name "btdm_app_flash")
@@ -266,7 +270,7 @@ if(CONFIG_BT_ENABLED)
         add_prebuilt_library(bt_btdm_app
                              "${SYSTEM_BT_DIR}/controller/lib_esp32c3_family/esp32s3/lib${lib_name}.a")
         target_link_libraries(${COMPONENT_LIB} PRIVATE bt_btdm_app)
-        
+
     elseif(CONFIG_BT_CONTROLLER_ENABLED)
         if(CONFIG_BT_LE_CONTROLLER_LOG_WRAP_PANIC_HANDLER_ENABLE)
             target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")
@@ -283,7 +287,7 @@ if(CONFIG_BT_ENABLED)
                 target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=uart_write_bytes_with_break")
             endif()
         endif()
-        
+
         if(CONFIG_IDF_TARGET_ESP32C6)
             add_prebuilt_library(libble_app
                 "${SYSTEM_BT_DIR}/controller/lib_esp32c6/esp32c6-bt-lib/esp32c6/libble_app.a"
