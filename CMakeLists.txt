@@ -94,7 +94,6 @@ if(CONFIG_BT_ENABLED)
         "${SYSTEM_BT_DIR}/common/osi/osi.c"
         "${SYSTEM_BT_DIR}/common/osi/semaphore.c"
         "${SYSTEM_BT_DIR}/porting/mem/bt_osi_mem.c"
-        "${SYSTEM_BT_DIR}/common/ble_log/ble_log_spi_out.c"
     )
 
     if(CONFIG_BT_NIMBLE_ENABLED)
