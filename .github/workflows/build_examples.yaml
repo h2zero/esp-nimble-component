@@ -24,13 +24,13 @@ jobs:
 
     steps:
       - name: Checkout esp-nimble-component
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: 'recursive'
           path: workspace/components/bt
 
       - name: Checkout esp-nimble-cpp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: h2zero/esp-nimble-cpp
           path: workspace/components/esp-nimble-cpp
