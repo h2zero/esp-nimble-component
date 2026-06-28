@@ -1,0 +1,58 @@
+name: Build Examples
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.example }} on IDF ${{ matrix.idf_ver }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        idf_ver: ["release-v5.5", "release-v6.0"]
+        example: ["NimBLE_Server", "NimBLE_Client"]
+        target: ["esp32", "esp32s3", "esp32c6"]
+
+    container:
+      image: espressif/idf:${{ matrix.idf_ver }}
+
+    steps:
+      - name: Checkout esp-nimble-component
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          path: workspace/components/bt
+
+      - name: Checkout esp-nimble-cpp
+        uses: actions/checkout@v4
+        with:
+          repository: h2zero/esp-nimble-cpp
+          path: workspace/components/esp-nimble-cpp
+
+      - name: Structure Workspace Components and Examples
+        run: |
+          # Copy the requested example out to the main level of the workspace
+          cp -r workspace/components/esp-nimble-cpp/examples/${{ matrix.example }} workspace/${{ matrix.example }}
+          cp -r workspace/components workspace/${{ matrix.example }}/components
+
+      - name: Patch Framework Paths
+        run: |
+          TARGET_CMAKE="workspace/${{ matrix.example }}/components/bt/CMakeLists.txt"
+          TARGET_MEM_HEADER="workspace/${{ matrix.example }}/components/bt/host/nimble/port/include/esp_nimble_mem.h"
+          # Update the hardcoded linker script path to point to the new 'controller/' subdirectory
+          sed -i 's|linker_esp_ble_controller.lf|controller/linker_esp_ble_controller.lf|g' "$TARGET_CMAKE"
+          sed -i 's|linker_rw_bt_controller.lf|controller/linker_rw_bt_controller.lf|g' "$TARGET_CMAKE"
+          sed -i 's/define nimble_platform_mem_calloc bt_osi_mem_calloc/define nimble_platform_mem_calloc calloc/g' "$TARGET_MEM_HEADER"
+
+      - name: Compile Example Project
+        run: |
+          . $IDF_PATH/export.sh
+          cd workspace/${{ matrix.example }}
+          idf.py set-target ${{ matrix.target }}
+          idf.py build
